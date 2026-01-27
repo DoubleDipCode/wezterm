@@ -246,7 +246,7 @@ impl crate::TermWindow {
             .context("filled_rectangle for window background")?;
         }
 
-        for pos in panes {
+        for pos in &panes {
             if pos.is_active {
                 self.update_text_cursor(&pos);
                 if focused {
@@ -264,6 +264,10 @@ impl crate::TermWindow {
                     .context("paint_split")?;
             }
         }
+
+        // Render Claude Code status borders after pane content
+        self.render_pane_borders(&mut layers, &panes)
+            .context("render_pane_borders")?;
 
         if self.show_tab_bar {
             self.paint_tab_bar(&mut layers).context("paint_tab_bar")?;
