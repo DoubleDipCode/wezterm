@@ -843,6 +843,24 @@ impl FileBrowserRenderer {
             filepath: entry.path.clone(),
         })
     }
+
+    /// Yank (copy) the selected entry's path to the clipboard (y key)
+    ///
+    /// Returns the absolute path of the selected entry for copying to the
+    /// system clipboard. Works for both files and directories.
+    ///
+    /// The actual clipboard operation must be performed by the caller
+    /// (TermWindow) since FileBrowserRenderer doesn't have access to
+    /// the window system.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(YankResult)` - If an entry is selected, contains the path and feedback message
+    /// * `None` - If no entry is selected
+    pub fn yank_selected_path(&self) -> Option<YankResult> {
+        let entry = self.selected_entry()?;
+        Some(YankResult::new(entry.path.clone()))
+    }
 }
 
 /// Action to open a file in the user's editor
@@ -875,6 +893,28 @@ impl OpenFileAction {
             format!("{} '{}'", self.editor, path_str.replace('\'', "'\\''"))
         } else {
             format!("{} {}", self.editor, path_str)
+        }
+    }
+}
+
+/// Result of a yank (copy to clipboard) operation
+///
+/// This struct is returned by `FileBrowserRenderer::yank_selected_path()`
+/// and contains the path that was copied and a user-friendly message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YankResult {
+    /// The absolute path that was copied to the clipboard
+    pub path: PathBuf,
+    /// User-friendly message to display (e.g., "Copied!")
+    pub message: String,
+}
+
+impl YankResult {
+    /// Create a new yank result
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            message: "Copied!".to_string(),
         }
     }
 }
@@ -2287,5 +2327,94 @@ mod tests {
         let lines = renderer.render_preview();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("No preview"));
+    }
+
+    // Yank path tests (y key - US-044)
+
+    #[test]
+    fn test_yank_result_new() {
+        let path = PathBuf::from("/home/user/test.txt");
+        let result = YankResult::new(path.clone());
+        assert_eq!(result.path, path);
+        assert_eq!(result.message, "Copied!");
+    }
+
+    #[test]
+    fn test_yank_selected_path_returns_none_on_empty() {
+        let renderer = FileBrowserRenderer::new();
+        // No directory set, no entries
+        assert!(renderer.yank_selected_path().is_none());
+    }
+
+    #[test]
+    fn test_yank_selected_path_returns_file_path() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_yank_file");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "content").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+
+        let result = renderer.yank_selected_path();
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert_eq!(result.path, temp_dir.join("test.txt"));
+        assert_eq!(result.message, "Copied!");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_yank_selected_path_returns_directory_path() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_yank_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        // First entry should be the directory
+        assert!(renderer.selected_entry().unwrap().is_dir);
+
+        let result = renderer.yank_selected_path();
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert_eq!(result.path, subdir);
+        assert_eq!(result.message, "Copied!");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_yank_selected_path_after_navigation() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_yank_nav");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+
+        // First entry
+        let result = renderer.yank_selected_path().unwrap();
+        assert!(result.path.to_string_lossy().contains("a.txt"));
+
+        // Navigate down and yank again
+        renderer.move_down();
+        let result = renderer.yank_selected_path().unwrap();
+        assert!(result.path.to_string_lossy().contains("b.txt"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
