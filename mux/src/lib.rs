@@ -157,6 +157,11 @@ fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: Fil
                 break;
             }
             Ok(size) => {
+                // Record raw PTY output to the pane's ring buffer for status detection
+                if let Some(p) = pane.upgrade() {
+                    p.record_pty_output(&buf[0..size]);
+                }
+
                 parser.parse(&buf[0..size], |action| {
                     let mut flush = false;
                     match &action {

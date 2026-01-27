@@ -35,7 +35,65 @@ use wezterm_term::{
     SemanticZone, StableRowIndex, Terminal, TerminalConfiguration, TerminalSize,
 };
 
+use std::collections::VecDeque;
+
 const PROC_INFO_CACHE_TTL: Duration = Duration::from_millis(300);
+/// Size of the ring buffer for PTY output history (8KB)
+const PTY_OUTPUT_BUFFER_CAPACITY: usize = 8192;
+
+/// A ring buffer that stores the last N bytes of PTY output.
+/// Used for status detection (e.g., detecting Claude Code states).
+#[derive(Debug)]
+pub struct PtyOutputBuffer {
+    buffer: VecDeque<u8>,
+    capacity: usize,
+}
+
+impl PtyOutputBuffer {
+    /// Create a new ring buffer with the specified capacity
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Write bytes to the buffer, dropping oldest bytes if capacity is exceeded
+    pub fn write(&mut self, data: &[u8]) {
+        for &byte in data {
+            if self.buffer.len() >= self.capacity {
+                self.buffer.pop_front();
+            }
+            self.buffer.push_back(byte);
+        }
+    }
+
+    /// Get the current contents as a String (lossy UTF-8 conversion)
+    pub fn as_string(&self) -> String {
+        let bytes: Vec<u8> = self.buffer.iter().copied().collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// Get the current contents as a byte slice
+    pub fn as_bytes(&self) -> Vec<u8> {
+        self.buffer.iter().copied().collect()
+    }
+
+    /// Clear the buffer
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
+    /// Get the current length of data in the buffer
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Check if the buffer is empty
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+}
 
 #[derive(Debug)]
 enum ProcessState {
@@ -133,6 +191,8 @@ pub struct LocalPane {
     #[cfg(unix)]
     leader: Arc<Mutex<Option<CachedLeaderInfo>>>,
     command_description: String,
+    /// Ring buffer storing the last 8KB of PTY output for status detection
+    pty_output_buffer: Arc<Mutex<PtyOutputBuffer>>,
 }
 
 #[async_trait(?Send)]
@@ -823,6 +883,14 @@ impl Pane for LocalPane {
 
         Ok(results)
     }
+
+    fn record_pty_output(&self, data: &[u8]) {
+        self.pty_output_buffer.lock().write(data);
+    }
+
+    fn get_pty_output_for_status_detection(&self) -> Option<String> {
+        Some(self.pty_output_buffer.lock().as_string())
+    }
 }
 
 struct LocalPaneDCSHandler {
@@ -1019,7 +1087,24 @@ impl LocalPane {
             #[cfg(unix)]
             leader: Arc::new(Mutex::new(None)),
             command_description,
+            pty_output_buffer: Arc::new(Mutex::new(PtyOutputBuffer::new(PTY_OUTPUT_BUFFER_CAPACITY))),
         }
+    }
+
+    /// Get a clone of the Arc to the PTY output buffer.
+    /// This can be used to pass to the PTY read thread for writing.
+    pub fn get_pty_output_buffer(&self) -> Arc<Mutex<PtyOutputBuffer>> {
+        Arc::clone(&self.pty_output_buffer)
+    }
+
+    /// Write data to the PTY output buffer
+    pub fn write_to_pty_output_buffer(&self, data: &[u8]) {
+        self.pty_output_buffer.lock().write(data);
+    }
+
+    /// Get the current PTY output buffer contents as a String
+    pub fn get_pty_output_as_string(&self) -> String {
+        self.pty_output_buffer.lock().as_string()
     }
 
     #[cfg(unix)]

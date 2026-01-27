@@ -336,6 +336,18 @@ pub trait Pane: Downcast + Send + Sync {
     fn exit_behavior(&self) -> Option<ExitBehavior> {
         None
     }
+
+    /// Called to record raw PTY output bytes into a buffer for status detection.
+    /// The default implementation does nothing. LocalPane overrides this to
+    /// store the data in a ring buffer.
+    fn record_pty_output(&self, _data: &[u8]) {}
+
+    /// Get the recent PTY output as a string for status detection.
+    /// Returns None by default. LocalPane overrides this to return
+    /// the contents of its ring buffer.
+    fn get_pty_output_for_status_detection(&self) -> Option<String> {
+        None
+    }
 }
 impl_downcast!(Pane);
 
