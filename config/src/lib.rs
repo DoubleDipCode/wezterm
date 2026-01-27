@@ -23,6 +23,7 @@ use wezterm_term::UnicodeVersion;
 mod background;
 mod bell;
 mod cell;
+pub mod claude_terminal;
 mod color;
 mod config;
 mod daemon;
@@ -46,6 +47,7 @@ mod wsl;
 
 pub use crate::config::*;
 pub use background::*;
+pub use claude_terminal::*;
 pub use bell::*;
 pub use cell::*;
 pub use color::*;

@@ -1,5 +1,6 @@
 use crate::background::{BackgroundLayer, Gradient};
 use crate::bell::{AudibleBell, EasingFunction, VisualBell};
+use crate::claude_terminal::ClaudeTerminalConfig;
 use crate::color::{
     ColorSchemeFile, HsbTransform, Palette, SrgbaTuple, TabBarStyle, WindowFrameConfig,
 };
@@ -886,6 +887,10 @@ pub struct Config {
 
     #[dynamic(default = "default_ulimit_nproc")]
     pub ulimit_nproc: u64,
+
+    /// Claude Terminal specific configuration
+    #[dynamic(default)]
+    pub claude_terminal: ClaudeTerminalConfig,
 }
 impl_lua_conversion_dynamic!(Config);
 
