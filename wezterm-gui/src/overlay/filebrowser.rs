@@ -430,6 +430,68 @@ impl FileBrowserRenderer {
             self.selected_index = index.min(self.entries.len() - 1);
         }
     }
+
+    /// Open the selected file in the user's editor (Enter key)
+    ///
+    /// If the selected entry is a file (not a directory), this method
+    /// returns an `OpenFileAction` containing the editor command to spawn.
+    /// The editor is determined by the `$EDITOR` environment variable,
+    /// defaulting to "vi" if not set.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(OpenFileAction)` - If the selected entry is a file
+    /// * `None` - If no entry is selected or the selected entry is a directory
+    pub fn open_selected_file(&self) -> Option<OpenFileAction> {
+        let entry = self.selected_entry()?;
+
+        // Only open files, not directories
+        if entry.is_dir {
+            return None;
+        }
+
+        // Read $EDITOR environment variable, default to "vi"
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+        Some(OpenFileAction {
+            editor,
+            filepath: entry.path.clone(),
+        })
+    }
+}
+
+/// Action to open a file in the user's editor
+///
+/// This struct is returned by `FileBrowserRenderer::open_selected_file()`
+/// and contains all the information needed to spawn the editor command
+/// in the focused terminal pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFileAction {
+    /// The editor command (from $EDITOR or default "vi")
+    pub editor: String,
+    /// The full path to the file to open
+    pub filepath: PathBuf,
+}
+
+impl OpenFileAction {
+    /// Get the command line to execute
+    ///
+    /// Returns the editor command followed by the filepath, suitable
+    /// for spawning in a terminal.
+    ///
+    /// # Returns
+    ///
+    /// A string like `"vim /path/to/file.txt"` or `"code /path/to/file.txt"`
+    pub fn command_line(&self) -> String {
+        // Quote the filepath to handle spaces and special characters
+        let path_str = self.filepath.display().to_string();
+        if path_str.contains(' ') || path_str.contains('\'') || path_str.contains('"') {
+            // Use shell quoting for paths with special characters
+            format!("{} '{}'", self.editor, path_str.replace('\'', "'\\''"))
+        } else {
+            format!("{} {}", self.editor, path_str)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -961,6 +1023,114 @@ mod tests {
         // Out of bounds should clamp to max valid
         renderer.set_selected_index(100);
         assert_eq!(renderer.selected_index(), 2);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Open file tests (Enter key - US-039)
+
+    #[test]
+    fn test_open_selected_file_returns_none_on_empty() {
+        let renderer = FileBrowserRenderer::new();
+        assert!(renderer.open_selected_file().is_none());
+    }
+
+    #[test]
+    fn test_open_selected_file_returns_none_for_directory() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_open_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::create_dir(temp_dir.join("subdir")).unwrap();
+        std::fs::write(temp_dir.join("file.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+
+        // First entry should be the directory (directories come first)
+        assert_eq!(renderer.selected_index(), 0);
+        assert!(renderer.selected_entry().unwrap().is_dir);
+        assert!(renderer.open_selected_file().is_none());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_open_selected_file_returns_action_for_file() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_open_file");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "hello").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+
+        let action = renderer.open_selected_file();
+        assert!(action.is_some());
+
+        let action = action.unwrap();
+        assert_eq!(action.filepath, temp_dir.join("test.txt"));
+        // Editor should be from $EDITOR or default "vi"
+        assert!(!action.editor.is_empty());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_open_file_action_command_line_simple() {
+        let action = OpenFileAction {
+            editor: "vim".to_string(),
+            filepath: PathBuf::from("/home/user/file.txt"),
+        };
+        assert_eq!(action.command_line(), "vim /home/user/file.txt");
+    }
+
+    #[test]
+    fn test_open_file_action_command_line_with_spaces() {
+        let action = OpenFileAction {
+            editor: "code".to_string(),
+            filepath: PathBuf::from("/home/user/my file.txt"),
+        };
+        assert_eq!(action.command_line(), "code '/home/user/my file.txt'");
+    }
+
+    #[test]
+    fn test_open_file_action_command_line_with_quotes() {
+        let action = OpenFileAction {
+            editor: "vim".to_string(),
+            filepath: PathBuf::from("/home/user/file'name.txt"),
+        };
+        // Single quotes in path should be escaped
+        assert_eq!(action.command_line(), "vim '/home/user/file'\\''name.txt'");
+    }
+
+    #[test]
+    fn test_open_selected_file_uses_editor_env() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_editor_env");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+
+        // Set custom EDITOR for test
+        let original_editor = std::env::var("EDITOR").ok();
+        std::env::set_var("EDITOR", "custom-editor");
+
+        let action = renderer.open_selected_file().unwrap();
+        assert_eq!(action.editor, "custom-editor");
+
+        // Restore original EDITOR
+        match original_editor {
+            Some(val) => std::env::set_var("EDITOR", val),
+            None => std::env::remove_var("EDITOR"),
+        }
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
