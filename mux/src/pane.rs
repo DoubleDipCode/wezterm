@@ -9,6 +9,7 @@ use rangeset::RangeSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 use termwiz::hyperlink::Rule;
 use termwiz::input::KeyboardEncoding;
@@ -34,6 +35,27 @@ pub enum ClaudeStatus {
     AwaitingPermission,
     /// Claude Code has encountered an error.
     Error,
+}
+
+/// Represents the type of a pane in the terminal.
+/// Used to distinguish between regular terminal panes and special panes
+/// like the file browser.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaneType {
+    /// A standard terminal pane running a shell or process.
+    Terminal,
+    /// A file browser pane displaying directory contents.
+    /// Contains the current directory being displayed.
+    FileBrowser {
+        /// The current directory being displayed in the file browser.
+        current_dir: PathBuf,
+    },
+}
+
+impl Default for PaneType {
+    fn default() -> Self {
+        PaneType::Terminal
+    }
 }
 
 static PANE_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
@@ -373,6 +395,12 @@ pub trait Pane: Downcast + Send + Sync {
     /// Set the Claude Code status for this pane.
     /// Default implementation does nothing.
     fn set_claude_status(&self, _status: ClaudeStatus) {}
+
+    /// Get the type of this pane (Terminal or FileBrowser).
+    /// Returns `PaneType::Terminal` by default.
+    fn get_pane_type(&self) -> PaneType {
+        PaneType::Terminal
+    }
 }
 impl_downcast!(Pane);
 
