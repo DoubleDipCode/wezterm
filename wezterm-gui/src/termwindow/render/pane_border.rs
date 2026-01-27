@@ -6,6 +6,173 @@
 use crate::quad::TripleLayerQuadAllocator;
 use ::window::RectF;
 use mux::tab::PositionedPane;
+use wgpu::util::DeviceExt;
+
+/// Uniform data passed to the border shader.
+/// Contains the projection matrix for transforming vertices to clip space.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BorderUniform {
+    pub projection: [[f32; 4]; 4],
+}
+
+/// Vertex format for border rendering.
+/// Each vertex has a 2D position and RGBA color.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BorderVertex {
+    /// Position in pixels (will be transformed by projection matrix)
+    pub position: [f32; 2],
+    /// RGBA color (normalized 0.0-1.0)
+    pub color: [f32; 4],
+}
+
+impl BorderVertex {
+    /// Vertex attribute layout for wgpu
+    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        0 => Float32x2,  // position
+        1 => Float32x4,  // color
+    ];
+
+    /// Returns the vertex buffer layout descriptor for this vertex type.
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+/// Manages the wgpu render pipeline for drawing Claude Code status borders.
+///
+/// This pipeline uses a simple vertex/fragment shader that renders solid colored
+/// quads with alpha blending support for semi-transparent borders.
+pub struct BorderPipeline {
+    /// The compiled render pipeline
+    pub pipeline: wgpu::RenderPipeline,
+    /// Bind group layout for the uniform buffer (projection matrix)
+    pub uniform_bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl BorderPipeline {
+    /// Creates a new border pipeline for the given WebGPU device and surface format.
+    ///
+    /// This method is designed to be called during WebGpuState initialization,
+    /// before the full state is constructed.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - The wgpu device to create resources on
+    /// * `format` - The surface texture format for the render target
+    ///
+    /// # Returns
+    ///
+    /// A new BorderPipeline ready for rendering borders.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        // Load and compile the border shader
+        let shader = device.create_shader_module(wgpu::include_wgsl!("../../border.wgsl"));
+
+        // Create bind group layout for uniforms (projection matrix)
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("BorderUniform bind group layout"),
+            });
+
+        // Create pipeline layout with just the uniform bind group
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Border Pipeline Layout"),
+            bind_group_layouts: &[&uniform_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Create the render pipeline
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Border Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[BorderVertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    // Alpha blending for semi-transparent borders and glow effects
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            uniform_bind_group_layout,
+        }
+    }
+
+    /// Creates a bind group for the uniform buffer containing the projection matrix.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - The wgpu device to create the buffer on
+    /// * `uniform` - The uniform data (projection matrix)
+    ///
+    /// # Returns
+    ///
+    /// A bind group that can be used with this pipeline.
+    pub fn create_uniform_bind_group(
+        &self,
+        device: &wgpu::Device,
+        uniform: BorderUniform,
+    ) -> wgpu::BindGroup {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BorderUniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+            label: Some("BorderUniform Bind Group"),
+        })
+    }
+}
 
 /// Represents a quad (rectangle) for border rendering.
 ///

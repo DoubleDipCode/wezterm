@@ -1,4 +1,5 @@
 use crate::quad::Vertex;
+use crate::termwindow::render::pane_border::BorderPipeline;
 use anyhow::anyhow;
 use config::{ConfigHandle, GpuInfo, WebGpuPowerPreference};
 use std::cell::RefCell;
@@ -35,6 +36,8 @@ pub struct WebGpuState {
     pub texture_nearest_sampler: wgpu::Sampler,
     pub texture_linear_sampler: wgpu::Sampler,
     pub handle: RawHandlePair,
+    /// Pipeline for rendering Claude Code status borders around panes
+    pub border_pipeline: BorderPipeline,
 }
 
 pub struct RawHandlePair {
@@ -492,6 +495,9 @@ impl WebGpuState {
             cache: None,
         });
 
+        // Create the border pipeline for Claude Code status borders
+        let border_pipeline = BorderPipeline::new(&device, config.format);
+
         Ok(Self {
             adapter_info,
             downlevel_caps,
@@ -506,6 +512,7 @@ impl WebGpuState {
             texture_bind_group_layout,
             texture_nearest_sampler,
             texture_linear_sampler,
+            border_pipeline,
         })
     }
 
