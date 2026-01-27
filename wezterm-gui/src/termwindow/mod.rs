@@ -48,6 +48,7 @@ use mux::tab::{
     PositionedPane, PositionedSplit, SplitDirection, SplitRequest, SplitSize as MuxSplitSize, Tab,
     TabId,
 };
+use mux::layout::TilingLayout;
 use mux::window::WindowId as MuxWindowId;
 use mux::{Mux, MuxNotification};
 use mux_lua::MuxPane;
@@ -467,6 +468,8 @@ pub struct TermWindow {
     gl: Option<Rc<glium::backend::Context>>,
     webgpu: Option<Rc<WebGpuState>>,
     config_subscription: Option<config::ConfigSubscription>,
+    /// Auto-tiling layout state for managing pane arrangement
+    tiling_layout: TilingLayout,
 }
 
 impl TermWindow {
@@ -793,6 +796,7 @@ impl TermWindow {
             key_table_state: KeyTableState::default(),
             modal: RefCell::new(None),
             opengl_info: None,
+            tiling_layout: TilingLayout::new(),
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -3227,6 +3231,14 @@ impl TermWindow {
             PromptInputLine(args) => self.show_prompt_input_line(args),
             InputSelector(args) => self.show_input_selector(args),
             Confirmation(args) => self.show_confirmation(args),
+            AutoTileNewPane(spawn) => {
+                log::trace!("AutoTileNewPane {:?}", spawn);
+                self.auto_tile_new_pane(spawn);
+            }
+            AutoTileReset => {
+                log::trace!("AutoTileReset");
+                self.auto_tile_reset();
+            }
         };
         Ok(PerformAssignmentResult::Handled)
     }

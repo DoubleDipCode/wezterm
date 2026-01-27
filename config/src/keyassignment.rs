@@ -646,6 +646,10 @@ pub enum KeyAssignment {
     PromptInputLine(PromptInputLine),
     InputSelector(InputSelector),
     Confirmation(Confirmation),
+    /// Auto-tiling: create new pane and recalculate layout
+    AutoTileNewPane(SpawnCommand),
+    /// Auto-tiling: reset all pane layouts to equal size
+    AutoTileReset,
 }
 impl_lua_conversion_dynamic!(KeyAssignment);
 

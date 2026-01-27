@@ -2011,6 +2011,22 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Edit"],
             icon: None,
         },
+        AutoTileNewPane(_) => CommandDef {
+            brief: "Auto-Tile New Pane".into(),
+            doc: "Create a new pane using auto-tiling layout".into(),
+            keys: vec![(Modifiers::SUPER, "n".into())],
+            args: &[ArgType::ActivePane],
+            menubar: &["Shell"],
+            icon: Some("cod_split_horizontal"),
+        },
+        AutoTileReset => CommandDef {
+            brief: "Reset Auto-Tile Layout".into(),
+            doc: "Reset all panes to equal-size auto-tiled layout".into(),
+            keys: vec![(Modifiers::SUPER, "0".into())],
+            args: &[ArgType::ActivePane],
+            menubar: &["Shell"],
+            icon: Some("md_view_grid"),
+        },
     })
 }
 
@@ -2036,6 +2052,11 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
             domain: SpawnTabDomain::CurrentPaneDomain,
             ..Default::default()
         }),
+        AutoTileNewPane(SpawnCommand {
+            domain: SpawnTabDomain::CurrentPaneDomain,
+            ..Default::default()
+        }),
+        AutoTileReset,
         CloseCurrentTab { confirm: true },
         CloseCurrentPane { confirm: true },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain),

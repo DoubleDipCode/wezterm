@@ -1,7 +1,11 @@
 use crate::spawn::SpawnWhere;
 use config::keyassignment::{SpawnCommand, SpawnTabDomain};
 use config::TermConfig;
+use mux::layout::TilingLayout;
+use mux::tab::{SplitDirection, SplitRequest, SplitSize as MuxSplitSize};
+use mux::Mux;
 use std::sync::Arc;
+use window::WindowOps;
 
 impl super::TermWindow {
     pub fn spawn_command(&self, spawn: &SpawnCommand, spawn_where: SpawnWhere) {
@@ -31,6 +35,153 @@ impl super::TermWindow {
                 ..Default::default()
             },
             SpawnWhere::NewTab,
+        );
+    }
+
+    /// Create a new pane using auto-tiling layout.
+    /// This calculates the optimal split direction to achieve a grid layout,
+    /// creates the pane, and updates the tiling state.
+    pub fn auto_tile_new_pane(&mut self, spawn: &SpawnCommand) {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => {
+                log::error!("auto_tile_new_pane: no active tab");
+                return;
+            }
+        };
+
+        // Get current pane count
+        let panes = tab.iter_panes();
+        let current_count = panes.len();
+
+        // Calculate grid dimensions for n and n+1 panes
+        let (current_cols, current_rows) = TilingLayout::grid_dimensions(current_count);
+        let (new_cols, new_rows) = TilingLayout::grid_dimensions(current_count + 1);
+
+        // Determine split direction based on grid change
+        // If we need more columns, split horizontally
+        // If we need more rows, split vertically
+        let direction = if new_cols > current_cols {
+            SplitDirection::Horizontal
+        } else if new_rows > current_rows {
+            SplitDirection::Vertical
+        } else {
+            // Grid dimensions didn't change, alternate based on pane position
+            // For grids that are filling in, prefer horizontal splits
+            if current_count % new_cols == 0 {
+                SplitDirection::Vertical
+            } else {
+                SplitDirection::Horizontal
+            }
+        };
+
+        // Calculate split size to achieve equal-size tiling
+        let split_percent = self.calculate_auto_tile_split_percent(
+            current_count,
+            new_cols,
+            new_rows,
+            direction,
+        );
+
+        log::trace!(
+            "auto_tile_new_pane: {} panes -> {} panes, grid {}x{} -> {}x{}, direction {:?}, split {}%",
+            current_count,
+            current_count + 1,
+            current_cols,
+            current_rows,
+            new_cols,
+            new_rows,
+            direction,
+            split_percent
+        );
+
+        // Update tiling layout state
+        // Add existing panes to layout if not already tracked
+        if self.tiling_layout.panes.is_empty() {
+            for positioned in &panes {
+                self.tiling_layout.panes.push(positioned.pane.pane_id());
+            }
+        }
+
+        // Perform the split
+        self.spawn_command(
+            spawn,
+            SpawnWhere::SplitPane(SplitRequest {
+                direction,
+                target_is_second: true,
+                size: MuxSplitSize::Percent(split_percent),
+                top_level: true, // Split from tab level for better grid layouts
+            }),
+        );
+
+        // Schedule layout recalculation after pane is created
+        self.schedule_auto_tile_layout();
+    }
+
+    /// Calculate the split percentage to achieve equal-size tiling
+    fn calculate_auto_tile_split_percent(
+        &self,
+        _current_count: usize,
+        new_cols: usize,
+        new_rows: usize,
+        direction: SplitDirection,
+    ) -> u8 {
+        // For a simple approach, calculate what percentage the new pane should be
+        // to achieve roughly equal sizes
+        match direction {
+            SplitDirection::Horizontal => {
+                // New column: split to give new pane 1/new_cols of width
+                (100 / new_cols) as u8
+            }
+            SplitDirection::Vertical => {
+                // New row: split to give new pane 1/new_rows of height
+                (100 / new_rows) as u8
+            }
+        }
+    }
+
+    /// Schedule auto-tile layout recalculation
+    fn schedule_auto_tile_layout(&self) {
+        // Layout will be recalculated on next frame through the existing
+        // TabResized notification mechanism
+        if let Some(window) = &self.window {
+            window.invalidate();
+        }
+    }
+
+    /// Reset all panes to equal-size auto-tiled layout
+    pub fn auto_tile_reset(&mut self) {
+        // Clear locked panes
+        self.tiling_layout.locked.clear();
+
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => {
+                log::error!("auto_tile_reset: no active tab");
+                return;
+            }
+        };
+
+        // Rebuild tiling layout from current panes
+        let panes = tab.iter_panes();
+        self.tiling_layout.panes.clear();
+        for positioned in &panes {
+            self.tiling_layout.panes.push(positioned.pane.pane_id());
+        }
+
+        // Trigger resize to apply equal layout
+        // The resize() method will redistribute pane sizes
+        tab.resize(self.terminal_size);
+
+        if let Some(window) = &self.window {
+            window.invalidate();
+        }
+
+        log::trace!(
+            "auto_tile_reset: reset {} panes to equal layout",
+            panes.len()
         );
     }
 }
