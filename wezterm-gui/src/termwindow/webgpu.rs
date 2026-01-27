@@ -1,5 +1,5 @@
 use crate::quad::Vertex;
-use crate::termwindow::render::pane_border::BorderPipeline;
+use crate::termwindow::render::pane_border::{BlurPipeline, BorderPipeline};
 use anyhow::anyhow;
 use config::{ConfigHandle, GpuInfo, WebGpuPowerPreference};
 use std::cell::RefCell;
@@ -113,6 +113,8 @@ pub struct WebGpuState {
     pub handle: RawHandlePair,
     /// Pipeline for rendering Claude Code status borders around panes
     pub border_pipeline: BorderPipeline,
+    /// Pipeline for two-pass Gaussian blur (glow effect)
+    pub blur_pipeline: BlurPipeline,
     /// Intermediate textures for glow blur effect
     pub glow_textures: RefCell<GlowTextures>,
 }
@@ -575,6 +577,9 @@ impl WebGpuState {
         // Create the border pipeline for Claude Code status borders
         let border_pipeline = BorderPipeline::new(&device, config.format);
 
+        // Create the blur pipeline for glow effect
+        let blur_pipeline = BlurPipeline::new(&device, config.format);
+
         // Create glow textures for blur effect (window-sized)
         let glow_textures = GlowTextures::new(
             &device,
@@ -597,6 +602,7 @@ impl WebGpuState {
             texture_nearest_sampler,
             texture_linear_sampler,
             border_pipeline,
+            blur_pipeline,
             glow_textures: RefCell::new(glow_textures),
         })
     }

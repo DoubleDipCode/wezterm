@@ -2,6 +2,13 @@
 //!
 //! This module provides infrastructure for rendering colored borders around
 //! terminal panes to indicate Claude Code status (Idle, Running, AwaitingPermission, Error).
+//!
+//! ## Glow Effect
+//!
+//! The glow effect uses a two-pass separable Gaussian blur:
+//! 1. Render borders to `border_texture`
+//! 2. Apply horizontal blur: `border_texture` → `blur_temp`
+//! 3. Apply vertical blur: `blur_temp` → screen (additive blend)
 
 use crate::quad::TripleLayerQuadAllocator;
 use crate::status_detection::StatusColor;
@@ -9,6 +16,281 @@ use ::window::RectF;
 use mux::tab::PositionedPane;
 use wgpu::util::DeviceExt;
 use window::color::LinearRgba;
+
+/// Blur radius multiplier for the glow effect (8 pixels as per spec)
+pub const BLUR_RADIUS: f32 = 8.0;
+
+/// Uniform data passed to the blur shaders.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BlurUniform {
+    /// Texture dimensions (width, height) for calculating texel offsets
+    pub tex_size: [f32; 2],
+    /// Blur radius multiplier (default 1.0)
+    pub blur_scale: f32,
+    /// Padding for alignment
+    pub _padding: f32,
+}
+
+/// Vertex format for fullscreen quad blur passes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BlurVertex {
+    /// Position in clip space (-1 to 1)
+    pub position: [f32; 2],
+    /// Texture coordinates (0 to 1)
+    pub tex_coord: [f32; 2],
+}
+
+impl BlurVertex {
+    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        0 => Float32x2,  // position
+        1 => Float32x2,  // tex_coord
+    ];
+
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+/// Fullscreen quad vertices for blur passes.
+/// Two triangles covering the entire screen.
+pub const FULLSCREEN_QUAD_VERTICES: [BlurVertex; 6] = [
+    // Triangle 1
+    BlurVertex { position: [-1.0, -1.0], tex_coord: [0.0, 1.0] }, // bottom-left
+    BlurVertex { position: [ 1.0, -1.0], tex_coord: [1.0, 1.0] }, // bottom-right
+    BlurVertex { position: [ 1.0,  1.0], tex_coord: [1.0, 0.0] }, // top-right
+    // Triangle 2
+    BlurVertex { position: [-1.0, -1.0], tex_coord: [0.0, 1.0] }, // bottom-left
+    BlurVertex { position: [ 1.0,  1.0], tex_coord: [1.0, 0.0] }, // top-right
+    BlurVertex { position: [-1.0,  1.0], tex_coord: [0.0, 0.0] }, // top-left
+];
+
+/// Manages the blur pipelines for glow effect (horizontal and vertical passes).
+pub struct BlurPipeline {
+    /// Horizontal blur pipeline
+    pub h_pipeline: wgpu::RenderPipeline,
+    /// Vertical blur pipeline
+    pub v_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout for blur uniforms
+    pub uniform_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group layout for input texture
+    pub texture_bind_group_layout: wgpu::BindGroupLayout,
+    /// Vertex buffer for fullscreen quad
+    pub vertex_buffer: wgpu::Buffer,
+    /// Sampler for blur texture sampling
+    pub sampler: wgpu::Sampler,
+}
+
+impl BlurPipeline {
+    /// Creates a new blur pipeline for horizontal and vertical Gaussian blur.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        // Load shaders
+        let h_shader = device.create_shader_module(wgpu::include_wgsl!("../../blur_h.wgsl"));
+        let v_shader = device.create_shader_module(wgpu::include_wgsl!("../../blur_v.wgsl"));
+
+        // Create bind group layout for uniforms
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("BlurUniform bind group layout"),
+            });
+
+        // Create bind group layout for input texture
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("Blur texture bind group layout"),
+            });
+
+        // Create pipeline layout
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Blur Pipeline Layout"),
+            bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Create horizontal blur pipeline
+        let h_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Horizontal Blur Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &h_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[BlurVertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &h_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        // Create vertical blur pipeline (renders to screen with alpha blending)
+        let v_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Vertical Blur Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &v_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[BlurVertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &v_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    // Alpha blending for compositing glow onto main render
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        // Create vertex buffer for fullscreen quad
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Blur Fullscreen Quad Vertex Buffer"),
+            contents: bytemuck::cast_slice(&FULLSCREEN_QUAD_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        // Create sampler for blur texture sampling
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        Self {
+            h_pipeline,
+            v_pipeline,
+            uniform_bind_group_layout,
+            texture_bind_group_layout,
+            vertex_buffer,
+            sampler,
+        }
+    }
+
+    /// Creates a bind group for blur uniforms.
+    pub fn create_uniform_bind_group(
+        &self,
+        device: &wgpu::Device,
+        uniform: BlurUniform,
+    ) -> wgpu::BindGroup {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BlurUniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+            label: Some("BlurUniform Bind Group"),
+        })
+    }
+
+    /// Creates a bind group for the input texture.
+    pub fn create_texture_bind_group(
+        &self,
+        device: &wgpu::Device,
+        texture_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+            label: Some("Blur Texture Bind Group"),
+        })
+    }
+}
 
 /// Uniform data passed to the border shader.
 /// Contains the projection matrix for transforming vertices to clip space.
@@ -273,7 +555,89 @@ pub fn calculate_border_quads(
 /// Border width in pixels for Claude Code status borders.
 const BORDER_WIDTH_PX: f32 = 4.0;
 
+/// Generates border vertices for a quad with the given color.
+/// Returns 6 vertices (2 triangles) for the quad.
+fn quad_to_vertices(quad: &BorderQuad, color: [f32; 4]) -> [BorderVertex; 6] {
+    let x0 = quad.x;
+    let y0 = quad.y;
+    let x1 = quad.x + quad.width;
+    let y1 = quad.y + quad.height;
+
+    [
+        // Triangle 1
+        BorderVertex { position: [x0, y0], color },
+        BorderVertex { position: [x1, y0], color },
+        BorderVertex { position: [x1, y1], color },
+        // Triangle 2
+        BorderVertex { position: [x0, y0], color },
+        BorderVertex { position: [x1, y1], color },
+        BorderVertex { position: [x0, y1], color },
+    ]
+}
+
+/// Data needed to render a pane's border for glow effect.
+pub struct PaneBorderData {
+    pub quads: Vec<BorderQuad>,
+    pub color: [f32; 4],
+}
+
 impl crate::TermWindow {
+    /// Collects border data for all panes for glow rendering.
+    /// This generates vertex data that can be rendered to the glow texture.
+    pub fn collect_pane_border_data(&self, panes: &[PositionedPane]) -> Vec<PaneBorderData> {
+        let mut result = Vec::with_capacity(panes.len());
+
+        let cell_width = self.render_metrics.cell_size.width as f32;
+        let cell_height = self.render_metrics.cell_size.height as f32;
+        let (padding_left, padding_top) = self.padding_left_top();
+        let border = self.get_os_border();
+
+        let tab_bar_height = if self.show_tab_bar {
+            self.tab_bar_pixel_height().unwrap_or(0.0)
+        } else {
+            0.
+        };
+        let top_bar_height = if self.config.tab_bar_at_bottom {
+            0.0
+        } else {
+            tab_bar_height
+        };
+
+        let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
+
+        for pos in panes {
+            let status = pos.pane.get_claude_status();
+            let color = StatusColor::from_status(status.into());
+
+            let pane_x = padding_left + border.left.get() as f32 + (pos.left as f32 * cell_width);
+            let pane_y = top_pixel_y + (pos.top as f32 * cell_height);
+            let pane_width = pos.pixel_width as f32;
+            let pane_height = pos.pixel_height as f32;
+
+            let quads = calculate_border_quads(pane_x, pane_y, pane_width, pane_height, BORDER_WIDTH_PX);
+
+            result.push(PaneBorderData {
+                quads,
+                color: [color.r, color.g, color.b, color.a],
+            });
+        }
+
+        result
+    }
+
+    /// Generates border vertices for all panes.
+    /// Returns a Vec of vertices suitable for rendering with the border pipeline.
+    pub fn generate_border_vertices(&self, border_data: &[PaneBorderData]) -> Vec<BorderVertex> {
+        let mut vertices = Vec::new();
+
+        for data in border_data {
+            for quad in &data.quads {
+                vertices.extend_from_slice(&quad_to_vertices(quad, data.color));
+            }
+        }
+
+        vertices
+    }
     /// Renders a colored border around a pane based on its Claude Code status.
     ///
     /// This function is called after terminal content rendering to overlay

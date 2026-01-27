@@ -1,4 +1,5 @@
 use crate::colorease::ColorEaseUniform;
+use crate::termwindow::render::pane_border::{BlurUniform, BorderUniform, BLUR_RADIUS};
 use crate::termwindow::webgpu::ShaderUniform;
 use crate::termwindow::RenderFrame;
 use crate::uniforms::UniformBuilder;
@@ -8,6 +9,7 @@ use ::window::glium::uniforms::{
 };
 use ::window::glium::{BlendingFunction, LinearBlendingFactor, Surface};
 use config::FreeTypeLoadTarget;
+use wgpu::util::DeviceExt;
 
 impl crate::TermWindow {
     pub fn call_draw(&mut self, frame: &mut RenderFrame) -> anyhow::Result<()> {
@@ -20,7 +22,7 @@ impl crate::TermWindow {
     fn call_draw_webgpu(&mut self) -> anyhow::Result<()> {
         use crate::termwindow::webgpu::WebGpuTexture;
 
-        let webgpu = self.webgpu.as_mut().unwrap();
+        let webgpu = self.webgpu.as_ref().unwrap();
         let render_state = self.render_state.as_ref().unwrap();
 
         let output = webgpu.surface.get_current_texture()?;
@@ -142,9 +144,164 @@ impl crate::TermWindow {
             }
         }
 
+        // Render glow effect for pane borders
+        self.render_border_glow(&mut encoder, &view)?;
+
         // submit will accept anything that implements IntoIter
+        let webgpu = self.webgpu.as_ref().unwrap();
         webgpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        Ok(())
+    }
+
+    /// Renders the glow effect for pane borders using two-pass Gaussian blur.
+    ///
+    /// Flow:
+    /// 1. Render borders to `border_texture`
+    /// 2. Apply horizontal blur: `border_texture` → `blur_temp`
+    /// 3. Apply vertical blur: `blur_temp` → screen
+    fn render_border_glow(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        screen_view: &wgpu::TextureView,
+    ) -> anyhow::Result<()> {
+        let webgpu = self.webgpu.as_ref().unwrap();
+        let glow_textures = webgpu.glow_textures.borrow();
+
+        // Collect border data for all panes
+        let panes = self.get_panes_to_render();
+        let border_data = self.collect_pane_border_data(&panes);
+        let vertices = self.generate_border_vertices(&border_data);
+
+        if vertices.is_empty() {
+            return Ok(());
+        }
+
+        // Create vertex buffer for border rendering
+        let border_vertex_buffer = webgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Border Glow Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        // Create projection matrix for border rendering
+        let projection = euclid::Transform3D::<f32, f32, f32>::ortho(
+            -(self.dimensions.pixel_width as f32) / 2.0,
+            self.dimensions.pixel_width as f32 / 2.0,
+            self.dimensions.pixel_height as f32 / 2.0,
+            -(self.dimensions.pixel_height as f32) / 2.0,
+            -1.0,
+            1.0,
+        )
+        .to_arrays_transposed();
+
+        let border_uniform_bind_group = webgpu.border_pipeline.create_uniform_bind_group(
+            &webgpu.device,
+            BorderUniform { projection },
+        );
+
+        // Pass 1: Render borders to border_texture
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Border Glow Pass 1 - Render Borders"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &glow_textures.border_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            render_pass.set_pipeline(&webgpu.border_pipeline.pipeline);
+            render_pass.set_bind_group(0, &border_uniform_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, border_vertex_buffer.slice(..));
+            render_pass.draw(0..vertices.len() as u32, 0..1);
+        }
+
+        // Create blur uniform
+        let blur_uniform = BlurUniform {
+            tex_size: [glow_textures.width as f32, glow_textures.height as f32],
+            blur_scale: BLUR_RADIUS,
+            _padding: 0.0,
+        };
+        let blur_uniform_bind_group = webgpu.blur_pipeline.create_uniform_bind_group(
+            &webgpu.device,
+            blur_uniform,
+        );
+
+        // Create texture bind groups for blur passes
+        let border_texture_bind_group = webgpu.blur_pipeline.create_texture_bind_group(
+            &webgpu.device,
+            &glow_textures.border_view,
+        );
+        let blur_temp_texture_bind_group = webgpu.blur_pipeline.create_texture_bind_group(
+            &webgpu.device,
+            &glow_textures.blur_temp_view,
+        );
+
+        // Pass 2: Horizontal blur (border_texture → blur_temp)
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Border Glow Pass 2 - Horizontal Blur"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &glow_textures.blur_temp_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            render_pass.set_pipeline(&webgpu.blur_pipeline.h_pipeline);
+            render_pass.set_bind_group(0, &blur_uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &border_texture_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, webgpu.blur_pipeline.vertex_buffer.slice(..));
+            render_pass.draw(0..6, 0..1);
+        }
+
+        // Pass 3: Vertical blur (blur_temp → screen, with alpha blending)
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Border Glow Pass 3 - Vertical Blur"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: screen_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // Preserve existing content
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            render_pass.set_pipeline(&webgpu.blur_pipeline.v_pipeline);
+            render_pass.set_bind_group(0, &blur_uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &blur_temp_texture_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, webgpu.blur_pipeline.vertex_buffer.slice(..));
+            render_pass.draw(0..6, 0..1);
+        }
 
         Ok(())
     }
