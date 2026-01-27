@@ -149,6 +149,8 @@ pub enum TermWindowNotif {
         width: usize,
         height: usize,
     },
+    /// Trigger Claude Code status detection for all panes
+    ClaudeStatusUpdate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -432,6 +434,8 @@ pub struct TermWindow {
     line_quad_cache: RefCell<LfuCache<LineQuadCacheKey, LineQuadCacheValue>>,
 
     last_status_call: Instant,
+    /// Tracks when we last performed Claude Code status detection
+    last_claude_status_call: Instant,
     cursor_blink_state: RefCell<ColorEase>,
     blink_state: RefCell<ColorEase>,
     rapid_blink_state: RefCell<ColorEase>,
@@ -754,6 +758,7 @@ impl TermWindow {
                 &config,
             )),
             last_status_call: Instant::now(),
+            last_claude_status_call: Instant::now(),
             cursor_blink_state: RefCell::new(ColorEase::new(
                 config.cursor_blink_rate,
                 config.cursor_blink_ease_in,
@@ -887,6 +892,8 @@ impl TermWindow {
             myself.subscribe_to_pane_updates();
             myself.emit_window_event("window-config-reloaded", None);
             myself.emit_status_event();
+            // Start the Claude Code status detection polling loop
+            myself.schedule_next_claude_status_update();
         }
 
         crate::update::start_update_checker();
@@ -1318,6 +1325,9 @@ impl TermWindow {
             },
             TermWindowNotif::EmitStatusUpdate => {
                 self.emit_status_event();
+            }
+            TermWindowNotif::ClaudeStatusUpdate => {
+                self.perform_claude_status_detection();
             }
             TermWindowNotif::GetSelectionForPane { pane_id, tx } => {
                 let mux = Mux::get();
@@ -2107,6 +2117,61 @@ impl TermWindow {
                 .detach();
             }
         }
+    }
+
+    /// Schedule the next Claude Code status detection poll.
+    /// Fires every 100ms to check PTY output for status patterns.
+    fn schedule_next_claude_status_update(&mut self) {
+        if let Some(window) = self.window.as_ref() {
+            let now = Instant::now();
+            if self.last_claude_status_call <= now {
+                // Claude status detection runs every 100ms
+                let interval = Duration::from_millis(100);
+                let target = now + interval;
+                self.last_claude_status_call = target;
+
+                let window = window.clone();
+                promise::spawn::spawn(async move {
+                    Timer::at(target).await;
+                    window.notify(TermWindowNotif::ClaudeStatusUpdate);
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Perform Claude Code status detection for all panes in the current window.
+    /// Reads from each pane's PTY output ring buffer and updates status accordingly.
+    fn perform_claude_status_detection(&mut self) {
+        use crate::status_detection::ClaudeStatus as GuiClaudeStatus;
+
+        let mux = Mux::get();
+
+        // Get all panes for the current window
+        if let Some(tab) = mux.get_active_tab_for_window(self.mux_window_id) {
+            for pos in tab.iter_panes() {
+                // Get PTY output from ring buffer
+                if let Some(pty_output) = pos.pane.get_pty_output_for_status_detection() {
+                    // Detect status using pattern matching
+                    let gui_status = GuiClaudeStatus::detect(&pty_output, "claude");
+
+                    // Convert GUI status to mux status and update pane
+                    let mux_status = match gui_status {
+                        GuiClaudeStatus::Idle => mux::pane::ClaudeStatus::Idle,
+                        GuiClaudeStatus::Running => mux::pane::ClaudeStatus::Running,
+                        GuiClaudeStatus::AwaitingPermission => {
+                            mux::pane::ClaudeStatus::AwaitingPermission
+                        }
+                        GuiClaudeStatus::Error => mux::pane::ClaudeStatus::Error,
+                    };
+
+                    pos.pane.set_claude_status(mux_status);
+                }
+            }
+        }
+
+        // Schedule the next status check
+        self.schedule_next_claude_status_update();
     }
 
     fn update_text_cursor(&mut self, pos: &PositionedPane) {
