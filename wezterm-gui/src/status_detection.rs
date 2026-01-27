@@ -177,6 +177,9 @@ impl From<mux::pane::ClaudeStatus> for ClaudeStatus {
 impl ClaudeStatus {
     /// Detect the current Claude Code status from PTY output and process name.
     ///
+    /// This method reads user-configured detection patterns from the config file
+    /// and appends them to the built-in patterns.
+    ///
     /// Checks patterns in priority order:
     /// 1. Permission patterns (highest priority - user action required)
     /// 2. Error patterns (problems need attention)
@@ -189,24 +192,70 @@ impl ClaudeStatus {
     ///
     /// # Returns
     /// The detected `ClaudeStatus` based on pattern matching
-    pub fn detect(pty_output: &str, _process_name: &str) -> Self {
+    pub fn detect(pty_output: &str, process_name: &str) -> Self {
+        Self::detect_with_config(
+            pty_output,
+            process_name,
+            &config::configuration().claude_terminal.detection,
+        )
+    }
+
+    /// Detect the current Claude Code status using user-configured patterns.
+    ///
+    /// Combines built-in patterns with user-configured patterns from the
+    /// provided detection config. User patterns are appended to the built-in
+    /// patterns and checked in the same priority order.
+    ///
+    /// # Arguments
+    /// * `pty_output` - The recent PTY output to analyze
+    /// * `_process_name` - The name of the running process (for future use)
+    /// * `detection_config` - User-configured detection patterns
+    ///
+    /// # Returns
+    /// The detected `ClaudeStatus` based on pattern matching
+    pub fn detect_with_config(
+        pty_output: &str,
+        _process_name: &str,
+        detection_config: &config::claude_terminal::ClaudeDetectionConfig,
+    ) -> Self {
         // Check permission patterns first (highest priority)
+        // First check built-in patterns
         for pattern in PERMISSION_PATTERNS {
             if pty_output.contains(pattern) {
                 return ClaudeStatus::AwaitingPermission;
             }
         }
+        // Then check user-configured patterns
+        for pattern in &detection_config.permission_patterns {
+            if pty_output.contains(pattern.as_str()) {
+                return ClaudeStatus::AwaitingPermission;
+            }
+        }
 
         // Check error patterns second
+        // First check built-in patterns
         for pattern in ERROR_PATTERNS {
             if pty_output.contains(pattern) {
                 return ClaudeStatus::Error;
             }
         }
+        // Then check user-configured patterns
+        for pattern in &detection_config.error_patterns {
+            if pty_output.contains(pattern.as_str()) {
+                return ClaudeStatus::Error;
+            }
+        }
 
         // Check running patterns third
+        // First check built-in patterns
         for pattern in RUNNING_PATTERNS {
             if pty_output.contains(pattern) {
+                return ClaudeStatus::Running;
+            }
+        }
+        // Then check user-configured patterns
+        for pattern in &detection_config.running_patterns {
+            if pty_output.contains(pattern.as_str()) {
                 return ClaudeStatus::Running;
             }
         }
@@ -330,6 +379,136 @@ mod tests {
         // Error should take priority over running
         let output = "Thinking...\nError: failed to compile";
         assert_eq!(ClaudeStatus::detect(output, "claude"), ClaudeStatus::Error);
+    }
+
+    // Tests for detect_with_config with user patterns
+
+    #[test]
+    fn test_detect_with_config_custom_permission_pattern() {
+        let mut detection_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        detection_config
+            .permission_patterns
+            .push("Custom permission needed".to_string());
+
+        // Built-in patterns still work
+        let output1 = "Allow this action?";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output1, "claude", &detection_config),
+            ClaudeStatus::AwaitingPermission
+        );
+
+        // Custom pattern also works
+        let output2 = "Custom permission needed";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output2, "claude", &detection_config),
+            ClaudeStatus::AwaitingPermission
+        );
+
+        // Without the custom pattern config, it would be Idle
+        let empty_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output2, "claude", &empty_config),
+            ClaudeStatus::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_with_config_custom_running_pattern() {
+        let mut detection_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        detection_config
+            .running_patterns
+            .push("Compiling...".to_string());
+
+        // Built-in patterns still work
+        let output1 = "Thinking...";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output1, "claude", &detection_config),
+            ClaudeStatus::Running
+        );
+
+        // Custom pattern also works
+        let output2 = "Compiling... please wait";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output2, "claude", &detection_config),
+            ClaudeStatus::Running
+        );
+
+        // Without the custom pattern config, it would be Idle
+        let empty_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output2, "claude", &empty_config),
+            ClaudeStatus::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_with_config_custom_error_pattern() {
+        let mut detection_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        detection_config
+            .error_patterns
+            .push("Build crashed".to_string());
+
+        // Built-in patterns still work
+        let output1 = "Error: something failed";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output1, "claude", &detection_config),
+            ClaudeStatus::Error
+        );
+
+        // Custom pattern also works
+        let output2 = "Build crashed with code 1";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output2, "claude", &detection_config),
+            ClaudeStatus::Error
+        );
+
+        // Without the custom pattern config, it would be Idle
+        let empty_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output2, "claude", &empty_config),
+            ClaudeStatus::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_with_config_priority_custom_permission_over_custom_error() {
+        let mut detection_config = config::claude_terminal::ClaudeDetectionConfig::default();
+        detection_config
+            .permission_patterns
+            .push("Please confirm".to_string());
+        detection_config
+            .error_patterns
+            .push("Problem detected".to_string());
+
+        // Custom permission takes priority over custom error
+        let output = "Problem detected\nPlease confirm to continue";
+        assert_eq!(
+            ClaudeStatus::detect_with_config(output, "claude", &detection_config),
+            ClaudeStatus::AwaitingPermission
+        );
+    }
+
+    #[test]
+    fn test_detect_with_config_empty_patterns() {
+        // Empty config should still work with built-in patterns only
+        let empty_config = config::claude_terminal::ClaudeDetectionConfig::default();
+
+        assert_eq!(
+            ClaudeStatus::detect_with_config("Allow this action?", "claude", &empty_config),
+            ClaudeStatus::AwaitingPermission
+        );
+        assert_eq!(
+            ClaudeStatus::detect_with_config("Thinking...", "claude", &empty_config),
+            ClaudeStatus::Running
+        );
+        assert_eq!(
+            ClaudeStatus::detect_with_config("Error: failed", "claude", &empty_config),
+            ClaudeStatus::Error
+        );
+        assert_eq!(
+            ClaudeStatus::detect_with_config("Some random text", "claude", &empty_config),
+            ClaudeStatus::Idle
+        );
     }
 
     // StatusColor tests
