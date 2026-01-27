@@ -57,6 +57,7 @@ use smol::Timer;
 use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, LinkedList};
 use std::ops::Add;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -474,6 +475,10 @@ pub struct TermWindow {
     tiling_layout: TilingLayout,
     /// Animation state for smooth pane resize transitions (150ms ease-out)
     layout_animation: Option<LayoutAnimation>,
+    /// Current directory displayed in the file browser (synced from focused pane)
+    file_browser_current_dir: PathBuf,
+    /// Last focused pane ID for detecting focus changes
+    last_focused_pane_id: Option<PaneId>,
 }
 
 impl TermWindow {
@@ -802,6 +807,8 @@ impl TermWindow {
             opengl_info: None,
             tiling_layout: TilingLayout::new(),
             layout_animation: None,
+            file_browser_current_dir: dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+            last_focused_pane_id: None,
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -2154,6 +2161,7 @@ impl TermWindow {
 
     /// Perform Claude Code status detection for all panes in the current window.
     /// Reads from each pane's PTY output ring buffer and updates status accordingly.
+    /// Also updates the file browser when the focused pane changes.
     fn perform_claude_status_detection(&mut self) {
         use crate::status_detection::ClaudeStatus as GuiClaudeStatus;
 
@@ -2161,6 +2169,22 @@ impl TermWindow {
 
         // Get all panes for the current window
         if let Some(tab) = mux.get_active_tab_for_window(self.mux_window_id) {
+            // Check if focus has changed and update file browser
+            if let Some(active_pane) = tab.get_active_pane() {
+                let active_pane_id = active_pane.pane_id();
+
+                // Check if focus has changed
+                let focus_changed = match self.last_focused_pane_id {
+                    Some(last_id) => last_id != active_pane_id,
+                    None => true, // First time, always update
+                };
+
+                if focus_changed {
+                    self.last_focused_pane_id = Some(active_pane_id);
+                    self.update_file_browser_for_focus(&active_pane);
+                }
+            }
+
             for pos in tab.iter_panes() {
                 // Get PTY output from ring buffer
                 if let Some(pty_output) = pos.pane.get_pty_output_for_status_detection() {
@@ -2188,6 +2212,29 @@ impl TermWindow {
 
         // Schedule the next status check
         self.schedule_next_claude_status_update();
+    }
+
+    /// Update the file browser's current directory when pane focus changes.
+    /// This reads the focused pane's current working directory and updates
+    /// the file browser to display that directory.
+    fn update_file_browser_for_focus(&mut self, pane: &Arc<dyn Pane>) {
+        // Get the current directory from the focused pane
+        let new_dir = pane.get_current_dir();
+
+        // Only update if the directory has actually changed
+        if new_dir != self.file_browser_current_dir {
+            log::trace!(
+                "File browser: updating directory from {:?} to {:?}",
+                self.file_browser_current_dir,
+                new_dir
+            );
+            self.file_browser_current_dir = new_dir;
+
+            // Trigger a re-render to update the file browser display
+            if let Some(window) = self.window.as_ref() {
+                window.invalidate();
+            }
+        }
     }
 
     fn update_text_cursor(&mut self, pos: &PositionedPane) {
