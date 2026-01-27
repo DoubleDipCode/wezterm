@@ -5,7 +5,9 @@
 //! with vim-style bindings (j/k/h/l).
 
 use mux::layout::Rect;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Entry type for directory listing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +15,27 @@ pub enum EntryType {
     Directory,
     File,
 }
+
+/// Git status for a file
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitStatus {
+    /// File is not tracked by git or has no changes
+    #[default]
+    None,
+    /// File has been modified (working tree changes)
+    Modified,
+    /// File has been staged for commit
+    Staged,
+    /// File is untracked by git
+    Untracked,
+}
+
+/// Status symbol for git modified files (red)
+const GIT_MODIFIED_SYMBOL: char = '●';
+/// Status symbol for git staged files (green)
+const GIT_STAGED_SYMBOL: char = '●';
+/// Status symbol for git untracked files (yellow)
+const GIT_UNTRACKED_SYMBOL: char = '●';
 
 /// A directory entry with metadata for file browser display
 #[derive(Debug, Clone)]
@@ -106,6 +129,100 @@ pub fn read_dir(path: &Path, show_hidden: bool) -> Vec<DirEntry> {
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         }
     });
+
+    result
+}
+
+/// Get git status for all files in a directory.
+///
+/// Runs `git status --porcelain` in the specified directory and parses the output
+/// to determine the git status of each file. Returns a HashMap mapping file paths
+/// to their git status.
+///
+/// # Arguments
+///
+/// * `dir` - The directory to check git status for
+///
+/// # Returns
+///
+/// A HashMap mapping PathBuf to GitStatus. Files not in the map have no git status
+/// (either not in a git repo, or have no changes).
+///
+/// # Status Codes
+///
+/// Git porcelain format uses two-character codes:
+/// - `M ` = staged modified, ` M` = unstaged modified, `MM` = both
+/// - `A ` = staged new file
+/// - `??` = untracked
+/// - ` D` / `D ` = deleted
+///
+/// We prioritize: Staged > Modified > Untracked
+pub fn git_status_for_directory(dir: &Path) -> HashMap<PathBuf, GitStatus> {
+    let mut result = HashMap::new();
+
+    // Run git status --porcelain in the directory
+    let output = match Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(dir)
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return result, // git not available or not a git repo
+    };
+
+    // Check if command succeeded (non-zero exit code means not a git repo)
+    if !output.status.success() {
+        return result;
+    }
+
+    // Parse the output line by line
+    let stdout = match std::str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(_) => return result,
+    };
+
+    for line in stdout.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+
+        // Format: XY filename
+        // X = index status, Y = working tree status
+        let index_status = line.chars().next().unwrap_or(' ');
+        let worktree_status = line.chars().nth(1).unwrap_or(' ');
+        let filename = &line[3..];
+
+        // Handle renamed files (format: "R  old -> new")
+        let filename = if filename.contains(" -> ") {
+            filename.split(" -> ").last().unwrap_or(filename)
+        } else {
+            filename
+        };
+
+        // Remove any quotes around filename
+        let filename = filename.trim_matches('"');
+
+        let path = dir.join(filename);
+
+        // Determine status based on git codes
+        // Priority: Staged > Modified > Untracked
+        let status = if index_status == '?' && worktree_status == '?' {
+            GitStatus::Untracked
+        } else if index_status != ' ' && index_status != '?' {
+            // Has staged changes (A, M, D, R in index position)
+            GitStatus::Staged
+        } else if worktree_status == 'M' || worktree_status == 'D' {
+            // Has working tree modifications
+            GitStatus::Modified
+        } else {
+            GitStatus::None
+        };
+
+        if status != GitStatus::None {
+            result.insert(path, status);
+        }
+    }
 
     result
 }
@@ -228,6 +345,8 @@ pub struct TreeLine {
     pub is_dir: bool,
     /// The full path to this entry
     pub path: PathBuf,
+    /// Git status for this entry
+    pub git_status: GitStatus,
 }
 
 impl TreeLine {
@@ -239,12 +358,51 @@ impl TreeLine {
             name: entry.name.clone(),
             is_dir: entry.is_dir(),
             path: entry.path.clone(),
+            git_status: GitStatus::None,
         }
     }
 
-    /// Format this line for display with icon and name
+    /// Create a new tree line from a directory entry with git status
+    pub fn from_entry_with_status(entry: &DirEntry, status: GitStatus) -> Self {
+        let icon = if entry.is_dir() { FOLDER_ICON } else { FILE_ICON };
+        Self {
+            icon,
+            name: entry.name.clone(),
+            is_dir: entry.is_dir(),
+            path: entry.path.clone(),
+            git_status: status,
+        }
+    }
+
+    /// Format this line for display with icon, name, and git status
+    ///
+    /// Shows git status symbol after the filename:
+    /// - Modified: red ● (shown as "● M")
+    /// - Staged: green ● (shown as "● S")
+    /// - Untracked: yellow ● (shown as "● U")
     pub fn display(&self) -> String {
-        format!("{} {}", self.icon, self.name)
+        match self.git_status {
+            GitStatus::None => format!("{} {}", self.icon, self.name),
+            GitStatus::Modified => format!("{} {} {} M", self.icon, self.name, GIT_MODIFIED_SYMBOL),
+            GitStatus::Staged => format!("{} {} {} S", self.icon, self.name, GIT_STAGED_SYMBOL),
+            GitStatus::Untracked => format!("{} {} {} U", self.icon, self.name, GIT_UNTRACKED_SYMBOL),
+        }
+    }
+
+    /// Get the git status color hint for rendering
+    ///
+    /// Returns an optional RGB tuple for color-coding:
+    /// - Modified: red (255, 85, 85)
+    /// - Staged: green (80, 250, 123)
+    /// - Untracked: yellow (241, 250, 140)
+    /// - None: no color hint (None)
+    pub fn git_status_color(&self) -> Option<(u8, u8, u8)> {
+        match self.git_status {
+            GitStatus::None => None,
+            GitStatus::Modified => Some((255, 85, 85)),    // red
+            GitStatus::Staged => Some((80, 250, 123)),     // green
+            GitStatus::Untracked => Some((241, 250, 140)), // yellow
+        }
     }
 }
 
@@ -332,6 +490,8 @@ pub struct FileBrowserRenderer {
     preview_mode: bool,
     /// Cached preview content for the selected entry
     preview_content: Option<PreviewContent>,
+    /// Whether to show git status indicators
+    show_git_status: bool,
 }
 
 impl Default for FileBrowserRenderer {
@@ -353,6 +513,7 @@ impl FileBrowserRenderer {
             filtered_entries: Vec::new(),
             preview_mode: false,
             preview_content: None,
+            show_git_status: true, // enabled by default
         }
     }
 
@@ -403,7 +564,25 @@ impl FileBrowserRenderer {
     fn reload_entries(&mut self) {
         if let Some(dir) = &self.current_dir {
             let dir_entries = read_dir(dir, self.show_hidden);
-            self.entries = dir_entries.iter().map(TreeLine::from_entry).collect();
+
+            // Fetch git status if enabled
+            let git_statuses = if self.show_git_status {
+                git_status_for_directory(dir)
+            } else {
+                HashMap::new()
+            };
+
+            // Create tree lines with git status
+            self.entries = dir_entries
+                .iter()
+                .map(|entry| {
+                    let status = git_statuses
+                        .get(&entry.path)
+                        .copied()
+                        .unwrap_or(GitStatus::None);
+                    TreeLine::from_entry_with_status(entry, status)
+                })
+                .collect();
         } else {
             self.entries.clear();
         }
@@ -481,6 +660,19 @@ impl FileBrowserRenderer {
             self.show_hidden = show;
             self.reload_entries();
         }
+    }
+
+    /// Set whether to show git status indicators
+    pub fn set_show_git_status(&mut self, show: bool) {
+        if self.show_git_status != show {
+            self.show_git_status = show;
+            self.reload_entries();
+        }
+    }
+
+    /// Check if git status indicators are enabled
+    pub fn is_git_status_enabled(&self) -> bool {
+        self.show_git_status
     }
 
     /// Enter filter mode (/ key)
@@ -2416,5 +2608,119 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // === Git Status Tests ===
+
+    #[test]
+    fn test_git_status_enum_default() {
+        let status = GitStatus::default();
+        assert_eq!(status, GitStatus::None);
+    }
+
+    #[test]
+    fn test_git_status_enum_variants() {
+        assert_ne!(GitStatus::Modified, GitStatus::Staged);
+        assert_ne!(GitStatus::Staged, GitStatus::Untracked);
+        assert_ne!(GitStatus::Untracked, GitStatus::None);
+    }
+
+    #[test]
+    fn test_tree_line_from_entry_with_status() {
+        let entry = DirEntry::new("test.rs".to_string(), PathBuf::from("/test.rs"), EntryType::File);
+
+        let line_modified = TreeLine::from_entry_with_status(&entry, GitStatus::Modified);
+        assert_eq!(line_modified.git_status, GitStatus::Modified);
+
+        let line_staged = TreeLine::from_entry_with_status(&entry, GitStatus::Staged);
+        assert_eq!(line_staged.git_status, GitStatus::Staged);
+
+        let line_untracked = TreeLine::from_entry_with_status(&entry, GitStatus::Untracked);
+        assert_eq!(line_untracked.git_status, GitStatus::Untracked);
+    }
+
+    #[test]
+    fn test_tree_line_display_with_git_status() {
+        let entry = DirEntry::new("test.rs".to_string(), PathBuf::from("/test.rs"), EntryType::File);
+
+        // Test None status (no suffix)
+        let line_none = TreeLine::from_entry(&entry);
+        let display_none = line_none.display();
+        assert!(!display_none.contains(" M"));
+        assert!(!display_none.contains(" S"));
+        assert!(!display_none.contains(" U"));
+
+        // Test Modified status (shows ● M)
+        let line_mod = TreeLine::from_entry_with_status(&entry, GitStatus::Modified);
+        let display_mod = line_mod.display();
+        assert!(display_mod.contains(GIT_MODIFIED_SYMBOL));
+        assert!(display_mod.contains(" M"));
+
+        // Test Staged status (shows ● S)
+        let line_staged = TreeLine::from_entry_with_status(&entry, GitStatus::Staged);
+        let display_staged = line_staged.display();
+        assert!(display_staged.contains(GIT_STAGED_SYMBOL));
+        assert!(display_staged.contains(" S"));
+
+        // Test Untracked status (shows ● U)
+        let line_untracked = TreeLine::from_entry_with_status(&entry, GitStatus::Untracked);
+        let display_untracked = line_untracked.display();
+        assert!(display_untracked.contains(GIT_UNTRACKED_SYMBOL));
+        assert!(display_untracked.contains(" U"));
+    }
+
+    #[test]
+    fn test_tree_line_git_status_color() {
+        let entry = DirEntry::new("test.rs".to_string(), PathBuf::from("/test.rs"), EntryType::File);
+
+        // None - no color
+        let line_none = TreeLine::from_entry(&entry);
+        assert!(line_none.git_status_color().is_none());
+
+        // Modified - red
+        let line_mod = TreeLine::from_entry_with_status(&entry, GitStatus::Modified);
+        assert_eq!(line_mod.git_status_color(), Some((255, 85, 85)));
+
+        // Staged - green
+        let line_staged = TreeLine::from_entry_with_status(&entry, GitStatus::Staged);
+        assert_eq!(line_staged.git_status_color(), Some((80, 250, 123)));
+
+        // Untracked - yellow
+        let line_untracked = TreeLine::from_entry_with_status(&entry, GitStatus::Untracked);
+        assert_eq!(line_untracked.git_status_color(), Some((241, 250, 140)));
+    }
+
+    #[test]
+    fn test_git_status_for_directory_non_git_dir() {
+        // Test with a directory that is not a git repo
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_no_git");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "content").unwrap();
+
+        // Should return empty HashMap for non-git directory
+        let result = git_status_for_directory(&temp_dir);
+        assert!(result.is_empty());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_renderer_show_git_status_default() {
+        let renderer = FileBrowserRenderer::new();
+        assert!(renderer.is_git_status_enabled());
+    }
+
+    #[test]
+    fn test_renderer_set_show_git_status() {
+        let mut renderer = FileBrowserRenderer::new();
+        assert!(renderer.is_git_status_enabled());
+
+        renderer.set_show_git_status(false);
+        assert!(!renderer.is_git_status_enabled());
+
+        renderer.set_show_git_status(true);
+        assert!(renderer.is_git_status_enabled());
     }
 }
