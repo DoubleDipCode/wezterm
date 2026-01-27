@@ -51,7 +51,10 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Fragment shader - applies vertical Gaussian blur
+// Glow opacity multiplier - makes glow visible but subtle (50% opacity)
+const GLOW_OPACITY: f32 = 0.5;
+
+// Fragment shader - applies vertical Gaussian blur with glow opacity
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Calculate vertical texel offset (1 pixel in texture space)
@@ -69,6 +72,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     color += textureSample(input_tex, input_sampler, in.tex_coord + texel_offset * 2.0) * WEIGHT_6;
     color += textureSample(input_tex, input_sampler, in.tex_coord + texel_offset * 3.0) * WEIGHT_7;
     color += textureSample(input_tex, input_sampler, in.tex_coord + texel_offset * 4.0) * WEIGHT_8;
+
+    // Apply glow opacity multiplier - makes glow visible but subtle
+    color.a *= GLOW_OPACITY;
 
     return color;
 }
