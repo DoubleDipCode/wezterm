@@ -161,6 +161,20 @@ impl Default for ClaudeStatus {
     }
 }
 
+/// Convert from mux's ClaudeStatus to the GUI's ClaudeStatus.
+/// Both enums have the same variants but are defined separately
+/// to avoid a circular dependency between mux and wezterm-gui crates.
+impl From<mux::pane::ClaudeStatus> for ClaudeStatus {
+    fn from(status: mux::pane::ClaudeStatus) -> Self {
+        match status {
+            mux::pane::ClaudeStatus::Idle => ClaudeStatus::Idle,
+            mux::pane::ClaudeStatus::Running => ClaudeStatus::Running,
+            mux::pane::ClaudeStatus::AwaitingPermission => ClaudeStatus::AwaitingPermission,
+            mux::pane::ClaudeStatus::Error => ClaudeStatus::Error,
+        }
+    }
+}
+
 impl ClaudeStatus {
     /// Detect the current Claude Code status from PTY output and process name.
     ///

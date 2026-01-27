@@ -4,9 +4,11 @@
 //! terminal panes to indicate Claude Code status (Idle, Running, AwaitingPermission, Error).
 
 use crate::quad::TripleLayerQuadAllocator;
+use crate::status_detection::StatusColor;
 use ::window::RectF;
 use mux::tab::PositionedPane;
 use wgpu::util::DeviceExt;
+use window::color::LinearRgba;
 
 /// Uniform data passed to the border shader.
 /// Contains the projection matrix for transforming vertices to clip space.
@@ -268,6 +270,9 @@ pub fn calculate_border_quads(
     vec![top, right, bottom, left]
 }
 
+/// Border width in pixels for Claude Code status borders.
+const BORDER_WIDTH_PX: f32 = 4.0;
+
 impl crate::TermWindow {
     /// Renders a colored border around a pane based on its Claude Code status.
     ///
@@ -284,15 +289,49 @@ impl crate::TermWindow {
     /// Returns `Ok(())` on success, or an error if rendering fails.
     pub fn render_pane_border(
         &mut self,
-        _layers: &mut TripleLayerQuadAllocator,
-        _pos: &PositionedPane,
+        layers: &mut TripleLayerQuadAllocator,
+        pos: &PositionedPane,
     ) -> anyhow::Result<()> {
-        // Stub implementation - currently renders nothing.
-        // Future iterations will:
         // 1. Get the pane's ClaudeStatus
+        let status = pos.pane.get_claude_status();
+
         // 2. Map status to color via StatusColor::from_status()
-        // 3. Calculate border quads around the pane
-        // 4. Render the colored border overlay
+        let color = StatusColor::from_status(status.into());
+        let linear_color = LinearRgba::with_components(color.r, color.g, color.b, color.a);
+
+        // 3. Calculate the pane rectangle in pixels
+        let cell_width = self.render_metrics.cell_size.width as f32;
+        let cell_height = self.render_metrics.cell_size.height as f32;
+        let (padding_left, padding_top) = self.padding_left_top();
+        let border = self.get_os_border();
+
+        let tab_bar_height = if self.show_tab_bar {
+            self.tab_bar_pixel_height()?
+        } else {
+            0.
+        };
+        let top_bar_height = if self.config.tab_bar_at_bottom {
+            0.0
+        } else {
+            tab_bar_height
+        };
+
+        let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
+
+        // Calculate pane pixel coordinates (similar to paint_pane)
+        let pane_x = padding_left + border.left.get() as f32 + (pos.left as f32 * cell_width);
+        let pane_y = top_pixel_y + (pos.top as f32 * cell_height);
+        let pane_width = pos.pixel_width as f32;
+        let pane_height = pos.pixel_height as f32;
+
+        // 4. Calculate border quads around the pane
+        let quads = calculate_border_quads(pane_x, pane_y, pane_width, pane_height, BORDER_WIDTH_PX);
+
+        // 5. Render quads using filled_rectangle on layer 2 (on top of content)
+        for quad in &quads {
+            self.filled_rectangle(layers, 2, quad.to_rect(), linear_color)?;
+        }
+
         Ok(())
     }
 
