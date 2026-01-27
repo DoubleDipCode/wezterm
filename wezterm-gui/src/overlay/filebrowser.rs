@@ -248,6 +248,64 @@ impl TreeLine {
     }
 }
 
+/// Content of a file preview
+#[derive(Debug, Clone)]
+pub struct PreviewContent {
+    /// The lines to display (first 100 lines for files)
+    pub lines: Vec<String>,
+    /// Whether this is a directory preview
+    pub is_directory: bool,
+    /// Entry count for directories
+    pub entry_count: Option<usize>,
+    /// Path being previewed
+    pub path: PathBuf,
+}
+
+impl PreviewContent {
+    /// Create a preview for a file (reads first 100 lines)
+    pub fn from_file(path: &Path) -> Option<Self> {
+        use std::io::{BufRead, BufReader};
+
+        let file = std::fs::File::open(path).ok()?;
+        let reader = BufReader::new(file);
+
+        let lines: Vec<String> = reader
+            .lines()
+            .take(100)
+            .filter_map(|l| l.ok())
+            .collect();
+
+        Some(Self {
+            lines,
+            is_directory: false,
+            entry_count: None,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Create a preview for a directory (shows entry count)
+    pub fn from_directory(path: &Path) -> Option<Self> {
+        let entries = std::fs::read_dir(path).ok()?;
+        let count = entries.count();
+
+        Some(Self {
+            lines: Vec::new(),
+            is_directory: true,
+            entry_count: Some(count),
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Create a preview for a file or directory based on path type
+    pub fn from_path(path: &Path) -> Option<Self> {
+        if path.is_dir() {
+            Self::from_directory(path)
+        } else {
+            Self::from_file(path)
+        }
+    }
+}
+
 /// Renderer for the file browser pane
 ///
 /// The FileBrowserRenderer is responsible for drawing the file browser
@@ -270,6 +328,10 @@ pub struct FileBrowserRenderer {
     filter_text: String,
     /// Filtered entries (subset of entries matching filter_text)
     filtered_entries: Vec<TreeLine>,
+    /// Whether preview mode is active
+    preview_mode: bool,
+    /// Cached preview content for the selected entry
+    preview_content: Option<PreviewContent>,
 }
 
 impl Default for FileBrowserRenderer {
@@ -289,6 +351,8 @@ impl FileBrowserRenderer {
             filter_mode: false,
             filter_text: String::new(),
             filtered_entries: Vec::new(),
+            preview_mode: false,
+            preview_content: None,
         }
     }
 
@@ -506,17 +570,114 @@ impl FileBrowserRenderer {
         }
     }
 
+    /// Check if preview mode is active
+    pub fn is_preview_mode(&self) -> bool {
+        self.preview_mode
+    }
+
+    /// Get the current preview content, if any
+    pub fn preview_content(&self) -> Option<&PreviewContent> {
+        self.preview_content.as_ref()
+    }
+
+    /// Toggle preview mode (Space key)
+    ///
+    /// When toggling on: loads preview content for the selected entry.
+    /// When toggling off: clears preview content.
+    /// Also exits preview mode on Esc or second Space press.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - Preview mode is now active
+    /// * `false` - Preview mode is now inactive
+    pub fn toggle_preview(&mut self) -> bool {
+        if self.preview_mode {
+            // Turning off preview mode
+            self.preview_mode = false;
+            self.preview_content = None;
+            false
+        } else {
+            // Turning on preview mode
+            self.preview_mode = true;
+            self.update_preview_content();
+            true
+        }
+    }
+
+    /// Close preview mode (Esc key - also closes preview if open)
+    ///
+    /// If preview mode is active, closes it. This allows Esc to
+    /// close the preview in addition to closing filter mode.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - Preview mode was active and is now closed
+    /// * `false` - Preview mode was not active
+    pub fn close_preview(&mut self) -> bool {
+        if self.preview_mode {
+            self.preview_mode = false;
+            self.preview_content = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update preview content for the currently selected entry
+    ///
+    /// Called when selection changes while preview mode is active,
+    /// or when preview mode is first enabled.
+    fn update_preview_content(&mut self) {
+        self.preview_content = self.selected_entry()
+            .and_then(|entry| PreviewContent::from_path(&entry.path));
+    }
+
+    /// Render preview content as a vector of strings
+    ///
+    /// Returns lines suitable for display in the preview panel.
+    /// For files, shows the first 100 lines.
+    /// For directories, shows the entry count.
+    ///
+    /// # Returns
+    ///
+    /// A vector of strings to display in the preview panel
+    pub fn render_preview(&self) -> Vec<String> {
+        match &self.preview_content {
+            Some(content) if content.is_directory => {
+                let count = content.entry_count.unwrap_or(0);
+                vec![
+                    format!("📁 {}", content.path.display()),
+                    String::new(),
+                    format!("{} entries", count),
+                ]
+            }
+            Some(content) => {
+                let mut lines = vec![
+                    format!("📄 {}", content.path.display()),
+                    String::new(),
+                ];
+                lines.extend(content.lines.iter().cloned());
+                lines
+            }
+            None => vec!["No preview available".to_string()],
+        }
+    }
+
     /// Move selection down (j key), wrapping to top at bottom
     ///
     /// Increments the selected index, wrapping to 0 if at the end
     /// of the entry list. Does nothing if there are no entries.
     /// Uses filtered entries when in filter mode.
+    /// Updates preview content if preview mode is active.
     pub fn move_down(&mut self) {
         let entries = self.entries();
         if entries.is_empty() {
             return;
         }
         self.selected_index = (self.selected_index + 1) % entries.len();
+        if self.preview_mode {
+            self.update_preview_content();
+        }
     }
 
     /// Move selection up (k key), wrapping to bottom at top
@@ -524,6 +685,7 @@ impl FileBrowserRenderer {
     /// Decrements the selected index, wrapping to the last entry
     /// if at the top. Does nothing if there are no entries.
     /// Uses filtered entries when in filter mode.
+    /// Updates preview content if preview mode is active.
     pub fn move_up(&mut self) {
         let entries = self.entries();
         if entries.is_empty() {
@@ -534,6 +696,9 @@ impl FileBrowserRenderer {
             self.selected_index = len - 1;
         } else {
             self.selected_index -= 1;
+        }
+        if self.preview_mode {
+            self.update_preview_content();
         }
     }
 
@@ -569,12 +734,16 @@ impl FileBrowserRenderer {
     /// Clamps the index to valid bounds (0 to len-1).
     /// Sets to 0 if entries are empty.
     /// Uses filtered entries when in filter mode.
+    /// Updates preview content if preview mode is active.
     pub fn set_selected_index(&mut self, index: usize) {
         let entries = self.entries();
         if entries.is_empty() {
             self.selected_index = 0;
         } else {
             self.selected_index = index.min(entries.len() - 1);
+        }
+        if self.preview_mode {
+            self.update_preview_content();
         }
     }
 
@@ -1846,5 +2015,277 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Preview mode tests (Space key - US-043)
+
+    #[test]
+    fn test_preview_content_from_file() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_preview_file");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a file with some lines
+        let file_path = temp_dir.join("test.txt");
+        std::fs::write(&file_path, "line 1\nline 2\nline 3\n").unwrap();
+
+        let content = PreviewContent::from_file(&file_path);
+        assert!(content.is_some());
+
+        let content = content.unwrap();
+        assert!(!content.is_directory);
+        assert!(content.entry_count.is_none());
+        assert_eq!(content.lines.len(), 3);
+        assert_eq!(content.lines[0], "line 1");
+        assert_eq!(content.lines[1], "line 2");
+        assert_eq!(content.lines[2], "line 3");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_preview_content_from_file_limits_to_100_lines() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_preview_limit");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a file with more than 100 lines
+        let file_path = temp_dir.join("long.txt");
+        let content_str: String = (1..=150).map(|i| format!("line {}\n", i)).collect();
+        std::fs::write(&file_path, content_str).unwrap();
+
+        let content = PreviewContent::from_file(&file_path);
+        assert!(content.is_some());
+
+        let content = content.unwrap();
+        assert_eq!(content.lines.len(), 100); // Limited to 100
+        assert_eq!(content.lines[0], "line 1");
+        assert_eq!(content.lines[99], "line 100");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_preview_content_from_directory() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_preview_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("c.txt"), "").unwrap();
+
+        let content = PreviewContent::from_directory(&temp_dir);
+        assert!(content.is_some());
+
+        let content = content.unwrap();
+        assert!(content.is_directory);
+        assert_eq!(content.entry_count, Some(3));
+        assert!(content.lines.is_empty());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_preview_content_from_path_file() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_preview_path_file");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_path = temp_dir.join("file.txt");
+        std::fs::write(&file_path, "content").unwrap();
+
+        let content = PreviewContent::from_path(&file_path);
+        assert!(content.is_some());
+        assert!(!content.unwrap().is_directory);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_preview_content_from_path_directory() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_preview_path_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let content = PreviewContent::from_path(&temp_dir);
+        assert!(content.is_some());
+        assert!(content.unwrap().is_directory);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_toggle_preview_off_by_default() {
+        let renderer = FileBrowserRenderer::new();
+        assert!(!renderer.is_preview_mode());
+        assert!(renderer.preview_content().is_none());
+    }
+
+    #[test]
+    fn test_toggle_preview_turns_on() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_toggle_on");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "hello").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert!(!renderer.is_preview_mode());
+
+        let result = renderer.toggle_preview();
+        assert!(result); // Returns true - preview is now on
+        assert!(renderer.is_preview_mode());
+        assert!(renderer.preview_content().is_some());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_toggle_preview_turns_off() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_toggle_off");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "hello").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.toggle_preview(); // Turn on
+        assert!(renderer.is_preview_mode());
+
+        let result = renderer.toggle_preview(); // Turn off
+        assert!(!result); // Returns false - preview is now off
+        assert!(!renderer.is_preview_mode());
+        assert!(renderer.preview_content().is_none());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_close_preview_closes_when_active() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_close_preview");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "hello").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.toggle_preview(); // Turn on
+        assert!(renderer.is_preview_mode());
+
+        let result = renderer.close_preview();
+        assert!(result); // Was active, now closed
+        assert!(!renderer.is_preview_mode());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_close_preview_noop_when_inactive() {
+        let mut renderer = FileBrowserRenderer::new();
+        assert!(!renderer.is_preview_mode());
+
+        let result = renderer.close_preview();
+        assert!(!result); // Was not active
+        assert!(!renderer.is_preview_mode());
+    }
+
+    #[test]
+    fn test_preview_updates_on_navigation() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_preview_nav");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "content a").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "content b").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.toggle_preview();
+
+        // First file selected
+        let preview = renderer.preview_content().unwrap();
+        assert!(preview.path.to_string_lossy().contains("a.txt"));
+
+        // Navigate down
+        renderer.move_down();
+        let preview = renderer.preview_content().unwrap();
+        assert!(preview.path.to_string_lossy().contains("b.txt"));
+
+        // Navigate up
+        renderer.move_up();
+        let preview = renderer.preview_content().unwrap();
+        assert!(preview.path.to_string_lossy().contains("a.txt"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_render_preview_for_file() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_render_file_preview");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "line 1\nline 2").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.toggle_preview();
+
+        let lines = renderer.render_preview();
+        assert!(lines.len() >= 4); // Header, blank, line1, line2
+        assert!(lines[0].contains("test.txt"));
+        assert_eq!(lines[2], "line 1");
+        assert_eq!(lines[3], "line 2");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_render_preview_for_directory() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_render_dir_preview");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("a.txt"), "").unwrap();
+        std::fs::write(subdir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        // First entry should be the directory
+        assert!(renderer.selected_entry().unwrap().is_dir);
+
+        renderer.toggle_preview();
+
+        let lines = renderer.render_preview();
+        assert!(lines.len() >= 3);
+        assert!(lines[0].contains("subdir"));
+        assert!(lines[2].contains("2 entries"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_render_preview_no_content() {
+        let renderer = FileBrowserRenderer::new();
+        // No directory set, no preview content
+        let lines = renderer.render_preview();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("No preview"));
     }
 }
