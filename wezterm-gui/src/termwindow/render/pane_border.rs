@@ -291,14 +291,22 @@ impl BlurPipeline {
 
 /// Uniform data passed to the border shader.
 /// Contains the projection matrix for transforming vertices to clip space,
-/// plus animation time for status-based animations (pulse, blink).
+/// plus animation time and settings for status-based animations (pulse, blink).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BorderUniform {
     pub projection: [[f32; 4]; 4],
     /// Animation time in seconds (from window creation)
     pub animation_time: f32,
-    /// Padding for 16-byte alignment
+    /// Enable pulse animation for idle status (1.0 = enabled, 0.0 = disabled)
+    pub pulse_idle_enabled: f32,
+    /// Enable blink animation for permission prompts (1.0 = enabled, 0.0 = disabled)
+    pub blink_permission_enabled: f32,
+    /// Blink rate in Hz (cycles per second) for permission prompts
+    pub blink_rate_hz: f32,
+    /// Pulse period in seconds for idle status animation
+    pub pulse_period_secs: f32,
+    /// Padding for 16-byte alignment (need 3 more floats to reach 16-byte boundary)
     pub _padding: [f32; 3],
 }
 

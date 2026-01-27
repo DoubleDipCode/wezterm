@@ -199,11 +199,22 @@ impl crate::TermWindow {
         // Calculate animation time in seconds for border animations
         let animation_time = self.created.elapsed().as_secs_f32();
 
+        // Read animation settings from config
+        let animation_config = &config::configuration().claude_terminal.animation;
+        let pulse_idle_enabled = if animation_config.pulse_idle { 1.0 } else { 0.0 };
+        let blink_permission_enabled = if animation_config.blink_permission { 1.0 } else { 0.0 };
+        let blink_rate_hz = animation_config.blink_rate_hz;
+        let pulse_period_secs = animation_config.pulse_period_secs;
+
         let border_uniform_bind_group = webgpu.border_pipeline.create_uniform_bind_group(
             &webgpu.device,
             BorderUniform {
                 projection,
                 animation_time,
+                pulse_idle_enabled,
+                blink_permission_enabled,
+                blink_rate_hz,
+                pulse_period_secs,
                 _padding: [0.0, 0.0, 0.0],
             },
         );
