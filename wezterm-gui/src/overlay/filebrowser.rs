@@ -381,11 +381,32 @@ impl TreeLine {
     /// - Staged: green ● (shown as "● S")
     /// - Untracked: yellow ● (shown as "● U")
     pub fn display(&self) -> String {
-        match self.git_status {
-            GitStatus::None => format!("{} {}", self.icon, self.name),
-            GitStatus::Modified => format!("{} {} {} M", self.icon, self.name, GIT_MODIFIED_SYMBOL),
-            GitStatus::Staged => format!("{} {} {} S", self.icon, self.name, GIT_STAGED_SYMBOL),
-            GitStatus::Untracked => format!("{} {} {} U", self.icon, self.name, GIT_UNTRACKED_SYMBOL),
+        self.display_with_options(true, true)
+    }
+
+    /// Format this line for display with configurable options
+    ///
+    /// # Arguments
+    ///
+    /// * `show_icons` - Whether to show nerdfont icons before filenames
+    /// * `show_git_status` - Whether to show git status indicators after filenames
+    pub fn display_with_options(&self, show_icons: bool, show_git_status: bool) -> String {
+        let prefix = if show_icons {
+            format!("{} ", self.icon)
+        } else {
+            String::new()
+        };
+
+        if !show_git_status || self.git_status == GitStatus::None {
+            format!("{}{}", prefix, self.name)
+        } else {
+            let (symbol, suffix) = match self.git_status {
+                GitStatus::Modified => (GIT_MODIFIED_SYMBOL, "M"),
+                GitStatus::Staged => (GIT_STAGED_SYMBOL, "S"),
+                GitStatus::Untracked => (GIT_UNTRACKED_SYMBOL, "U"),
+                GitStatus::None => unreachable!(),
+            };
+            format!("{}{} {} {}", prefix, self.name, symbol, suffix)
         }
     }
 
@@ -492,6 +513,8 @@ pub struct FileBrowserRenderer {
     preview_content: Option<PreviewContent>,
     /// Whether to show git status indicators
     show_git_status: bool,
+    /// Whether to show nerdfont icons
+    show_icons: bool,
 }
 
 impl Default for FileBrowserRenderer {
@@ -501,7 +524,7 @@ impl Default for FileBrowserRenderer {
 }
 
 impl FileBrowserRenderer {
-    /// Create a new file browser renderer
+    /// Create a new file browser renderer with default settings
     pub fn new() -> Self {
         Self {
             current_dir: None,
@@ -514,6 +537,35 @@ impl FileBrowserRenderer {
             preview_mode: false,
             preview_content: None,
             show_git_status: true, // enabled by default
+            show_icons: true,      // enabled by default
+        }
+    }
+
+    /// Create a new file browser renderer with settings from config
+    ///
+    /// Reads `config.claude_terminal.file_browser` and applies:
+    /// - `show_hidden`: Whether to show hidden files (default: false)
+    /// - `show_git_status`: Whether to show git status indicators (default: true)
+    /// - `icons`: Whether to show nerdfont icons (default: true)
+    ///
+    /// Note: The `enabled` config option is handled by the caller (TermWindow)
+    /// to control file browser visibility, not by the renderer itself.
+    pub fn new_from_config() -> Self {
+        let config = config::configuration();
+        let fb_config = &config.claude_terminal.file_browser;
+
+        Self {
+            current_dir: None,
+            selected_index: 0,
+            entries: Vec::new(),
+            show_hidden: fb_config.show_hidden,
+            filter_mode: false,
+            filter_text: String::new(),
+            filtered_entries: Vec::new(),
+            preview_mode: false,
+            preview_content: None,
+            show_git_status: fb_config.show_git_status,
+            show_icons: fb_config.icons,
         }
     }
 
@@ -643,7 +695,7 @@ impl FileBrowserRenderer {
         let mut lines: Vec<String> = entries
             .iter()
             .take(entry_lines)
-            .map(|line| line.display())
+            .map(|line| line.display_with_options(self.show_icons, self.show_git_status))
             .collect();
 
         // Add filter input line at the bottom when in filter mode
@@ -673,6 +725,22 @@ impl FileBrowserRenderer {
     /// Check if git status indicators are enabled
     pub fn is_git_status_enabled(&self) -> bool {
         self.show_git_status
+    }
+
+    /// Set whether to show nerdfont icons
+    pub fn set_show_icons(&mut self, show: bool) {
+        // No need to reload entries - icons are just a display option
+        self.show_icons = show;
+    }
+
+    /// Check if icons are enabled
+    pub fn is_icons_enabled(&self) -> bool {
+        self.show_icons
+    }
+
+    /// Check if hidden files are shown
+    pub fn is_show_hidden(&self) -> bool {
+        self.show_hidden
     }
 
     /// Enter filter mode (/ key)
@@ -2722,5 +2790,113 @@ mod tests {
 
         renderer.set_show_git_status(true);
         assert!(renderer.is_git_status_enabled());
+    }
+
+    #[test]
+    fn test_renderer_show_icons_default() {
+        let renderer = FileBrowserRenderer::new();
+        assert!(renderer.is_icons_enabled());
+    }
+
+    #[test]
+    fn test_renderer_set_show_icons() {
+        let mut renderer = FileBrowserRenderer::new();
+        assert!(renderer.is_icons_enabled());
+
+        renderer.set_show_icons(false);
+        assert!(!renderer.is_icons_enabled());
+
+        renderer.set_show_icons(true);
+        assert!(renderer.is_icons_enabled());
+    }
+
+    #[test]
+    fn test_renderer_is_show_hidden() {
+        let mut renderer = FileBrowserRenderer::new();
+        assert!(!renderer.is_show_hidden());
+
+        renderer.set_show_hidden(true);
+        assert!(renderer.is_show_hidden());
+    }
+
+    #[test]
+    fn test_display_with_options_no_icons() {
+        let entry = DirEntry::new("test.txt".to_string(), PathBuf::from("/test.txt"), EntryType::File);
+        let line = TreeLine::from_entry(&entry);
+
+        // With icons
+        let with_icons = line.display_with_options(true, false);
+        assert!(with_icons.contains(FILE_ICON));
+        assert!(with_icons.contains("test.txt"));
+
+        // Without icons
+        let without_icons = line.display_with_options(false, false);
+        assert!(!without_icons.contains(FILE_ICON));
+        assert!(without_icons.contains("test.txt"));
+        assert_eq!(without_icons, "test.txt");
+    }
+
+    #[test]
+    fn test_display_with_options_no_git_status() {
+        let entry = DirEntry::new("modified.txt".to_string(), PathBuf::from("/modified.txt"), EntryType::File);
+        let line = TreeLine::from_entry_with_status(&entry, GitStatus::Modified);
+
+        // With git status
+        let with_git = line.display_with_options(true, true);
+        assert!(with_git.contains(GIT_MODIFIED_SYMBOL));
+        assert!(with_git.contains(" M"));
+
+        // Without git status
+        let without_git = line.display_with_options(true, false);
+        assert!(!without_git.contains(GIT_MODIFIED_SYMBOL));
+        assert!(!without_git.contains(" M"));
+    }
+
+    #[test]
+    fn test_display_with_options_no_icons_no_git() {
+        let entry = DirEntry::new("staged.txt".to_string(), PathBuf::from("/staged.txt"), EntryType::File);
+        let line = TreeLine::from_entry_with_status(&entry, GitStatus::Staged);
+
+        let display = line.display_with_options(false, false);
+        assert_eq!(display, "staged.txt");
+    }
+
+    #[test]
+    fn test_render_respects_icons_setting() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_icons");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.set_show_icons(false);
+
+        let rect = Rect::new(0, 0, 200, 600);
+        let lines = renderer.render(rect);
+
+        assert_eq!(lines.len(), 1);
+        // Without icons, the line should just be the filename
+        assert!(!lines[0].contains(FILE_ICON));
+        assert!(lines[0].contains("test.txt"));
+
+        // Enable icons and verify they appear
+        renderer.set_show_icons(true);
+        let lines = renderer.render(rect);
+        assert!(lines[0].contains(FILE_ICON));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_new_from_config_defaults() {
+        // Test that new_from_config reads from config correctly
+        // The default config should have show_hidden=false, show_git_status=true, icons=true
+        let renderer = FileBrowserRenderer::new_from_config();
+        assert!(!renderer.is_show_hidden());
+        assert!(renderer.is_git_status_enabled());
+        assert!(renderer.is_icons_enabled());
     }
 }
