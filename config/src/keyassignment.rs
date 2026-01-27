@@ -654,6 +654,8 @@ pub enum KeyAssignment {
     AutoTileClosePane {
         confirm: bool,
     },
+    /// Auto-tiling: resize pane manually and lock it from auto-tiling
+    AutoTileResizePane(PaneDirection, usize),
 }
 impl_lua_conversion_dynamic!(KeyAssignment);
 

@@ -3243,6 +3243,10 @@ impl TermWindow {
                 log::trace!("AutoTileClosePane confirm={}", confirm);
                 self.auto_tile_close_pane(*confirm);
             }
+            AutoTileResizePane(direction, amount) => {
+                log::trace!("AutoTileResizePane {:?} {}", direction, amount);
+                self.auto_tile_resize_pane(*direction, *amount);
+            }
         };
         Ok(PerformAssignmentResult::Handled)
     }

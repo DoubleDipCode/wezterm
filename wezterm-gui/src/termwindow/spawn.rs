@@ -1,6 +1,6 @@
 use crate::overlay::{confirm_close_pane, start_overlay_pane};
 use crate::spawn::SpawnWhere;
-use config::keyassignment::{SpawnCommand, SpawnTabDomain};
+use config::keyassignment::{PaneDirection, SpawnCommand, SpawnTabDomain};
 use config::TermConfig;
 use mux::layout::TilingLayout;
 use mux::pane::CloseReason;
@@ -237,5 +237,54 @@ impl super::TermWindow {
         // Schedule layout recalculation after pane is removed
         // The layout will be recalculated on next frame
         self.schedule_auto_tile_layout();
+    }
+
+    /// Resize the current pane manually and lock it from auto-tiling.
+    /// This calls the standard pane resize function and then marks the
+    /// pane as locked so it won't be affected by future auto-tiling operations.
+    pub fn auto_tile_resize_pane(&mut self, direction: PaneDirection, amount: usize) {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => {
+                log::error!("auto_tile_resize_pane: no active tab");
+                return;
+            }
+        };
+
+        let pane = match tab.get_active_pane() {
+            Some(p) => p,
+            None => {
+                log::error!("auto_tile_resize_pane: no active pane");
+                return;
+            }
+        };
+
+        let pane_id = pane.pane_id();
+        let tab_id = tab.tab_id();
+
+        // Check if there's an overlay - don't resize if overlay is active
+        if self.tab_state(tab_id).overlay.is_some() {
+            log::trace!("auto_tile_resize_pane: overlay active, skipping resize");
+            return;
+        }
+
+        // Perform the resize using the standard pane resize function
+        tab.adjust_pane_size(direction, amount);
+
+        // Lock this pane from auto-tiling
+        self.tiling_layout.locked.insert(pane_id);
+
+        log::trace!(
+            "auto_tile_resize_pane: resized pane {} {:?} by {} cells and locked it",
+            pane_id,
+            direction,
+            amount
+        );
+
+        // Trigger a window invalidation to update the display
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
+        }
     }
 }
