@@ -1,0 +1,70 @@
+# Homebrew Cask formula for Claude Terminal
+# This file is a template - @TAG@ and @SHA256@ are replaced by release automation.
+# vim:ft=ruby:
+cask "claude-terminal" do
+  version "@TAG@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/DoubleDipCode/claude-terminal/releases/download/#{version}/ClaudeTerminal-macos-#{version}.zip"
+  name "Claude Terminal"
+  desc "A GPU-accelerated terminal emulator optimized for running multiple Claude Code instances"
+  homepage "https://github.com/DoubleDipCode/claude-terminal"
+
+  # Requires macOS 10.15 Catalina or later (Metal GPU support)
+  depends_on macos: ">= :catalina"
+
+  app "ClaudeTerminal.app"
+  [
+    "claude-terminal",
+    "wezterm-gui",
+    "wezterm-mux-server"
+  ].each do |tool|
+    binary "#{appdir}/ClaudeTerminal.app/Contents/MacOS/#{tool}"
+  end
+
+  preflight do
+    # Move "ClaudeTerminal-macos-#{version}/ClaudeTerminal.app" out of the subfolder
+    staged_subfolder = staged_path.glob(["ClaudeTerminal-*", "claude-terminal-*"]).first
+    if staged_subfolder
+      FileUtils.mv(staged_subfolder/"ClaudeTerminal.app", staged_path)
+      FileUtils.rm_rf(staged_subfolder)
+    end
+  end
+
+  postflight do
+    # Ensure shell integration is available
+    system_command "/bin/mkdir", args: ["-p", "#{ENV["HOME"]}/.config/claude-terminal"]
+  end
+
+  zap trash: [
+    "~/Library/Saved Application State/com.claudeterminal.app.savedState",
+    "~/.config/claude-terminal",
+    "~/.wezterm.lua"
+  ]
+
+  def caveats; <<~EOS
+    Claude Terminal has been installed.
+
+    Executables 'claude-terminal', 'wezterm-gui', 'wezterm-mux-server' are linked into:
+      /usr/local/bin/    for Intel Mac
+      /opt/homebrew/bin/ for Apple Silicon Mac
+
+    Configuration:
+      Add Claude Terminal settings to your ~/.wezterm.lua config file.
+      See: https://github.com/DoubleDipCode/claude-terminal#configuration
+
+    Shell Integration (required for file browser):
+      Add to your shell config to enable OSC 7 CWD reporting:
+
+      # For zsh (~/.zshrc):
+      precmd() { echo -ne "\\e]7;file://${HOST}${PWD}\\a" }
+
+      # For bash (~/.bashrc):
+      PROMPT_COMMAND='echo -ne "\\e]7;file://${HOSTNAME}${PWD}\\a"'
+
+    Nerd Font:
+      For file browser icons, install a Nerd Font:
+      brew install --cask font-hack-nerd-font
+  EOS
+  end
+end
