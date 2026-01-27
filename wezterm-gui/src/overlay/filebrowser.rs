@@ -367,6 +367,69 @@ impl FileBrowserRenderer {
             self.reload_entries();
         }
     }
+
+    /// Move selection down (j key), wrapping to top at bottom
+    ///
+    /// Increments the selected index, wrapping to 0 if at the end
+    /// of the entry list. Does nothing if there are no entries.
+    pub fn move_down(&mut self) {
+        if self.entries.is_empty() {
+            return;
+        }
+        self.selected_index = (self.selected_index + 1) % self.entries.len();
+    }
+
+    /// Move selection up (k key), wrapping to bottom at top
+    ///
+    /// Decrements the selected index, wrapping to the last entry
+    /// if at the top. Does nothing if there are no entries.
+    pub fn move_up(&mut self) {
+        if self.entries.is_empty() {
+            return;
+        }
+        if self.selected_index == 0 {
+            self.selected_index = self.entries.len() - 1;
+        } else {
+            self.selected_index -= 1;
+        }
+    }
+
+    /// Check if the entry at the given index is selected
+    ///
+    /// Used for highlighting the selected entry with a different
+    /// background color during rendering.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The index to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if this index is the currently selected entry
+    pub fn is_selected(&self, index: usize) -> bool {
+        index == self.selected_index
+    }
+
+    /// Get the currently selected entry, if any
+    ///
+    /// # Returns
+    ///
+    /// The selected TreeLine entry, or None if there are no entries
+    pub fn selected_entry(&self) -> Option<&TreeLine> {
+        self.entries.get(self.selected_index)
+    }
+
+    /// Set the selected index directly
+    ///
+    /// Clamps the index to valid bounds (0 to len-1).
+    /// Sets to 0 if entries are empty.
+    pub fn set_selected_index(&mut self, index: usize) {
+        if self.entries.is_empty() {
+            self.selected_index = 0;
+        } else {
+            self.selected_index = index.min(self.entries.len() - 1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -713,6 +776,191 @@ mod tests {
         assert_eq!(result[0].name, "zzz_dir");
         assert!(result[1].is_file());
         assert_eq!(result[1].name, "aaa_file.txt");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Navigation tests (j/k keyboard navigation)
+
+    #[test]
+    fn test_move_down_increments_index() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_nav_down");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("c.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert_eq!(renderer.selected_index(), 0);
+
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 1);
+
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 2);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_move_down_wraps_at_bottom() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_nav_wrap_down");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert_eq!(renderer.selected_index(), 0);
+
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 1);
+
+        // Should wrap to 0
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_move_up_decrements_index() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_nav_up");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("c.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.set_selected_index(2);
+        assert_eq!(renderer.selected_index(), 2);
+
+        renderer.move_up();
+        assert_eq!(renderer.selected_index(), 1);
+
+        renderer.move_up();
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_move_up_wraps_at_top() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_nav_wrap_up");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("c.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Should wrap to last (index 2)
+        renderer.move_up();
+        assert_eq!(renderer.selected_index(), 2);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_move_on_empty_list() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        // With no directory set, entries is empty
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Both moves should do nothing on empty list
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 0);
+
+        renderer.move_up();
+        assert_eq!(renderer.selected_index(), 0);
+    }
+
+    #[test]
+    fn test_is_selected() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_is_selected");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert!(renderer.is_selected(0));
+        assert!(!renderer.is_selected(1));
+
+        renderer.move_down();
+        assert!(!renderer.is_selected(0));
+        assert!(renderer.is_selected(1));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_selected_entry() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        // Empty - no selected entry
+        assert!(renderer.selected_entry().is_none());
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_selected_entry");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        let entry = renderer.selected_entry();
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().name, "a.txt");
+
+        renderer.move_down();
+        let entry = renderer.selected_entry();
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().name, "b.txt");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_set_selected_index() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_set_idx");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("c.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+
+        renderer.set_selected_index(1);
+        assert_eq!(renderer.selected_index(), 1);
+
+        // Out of bounds should clamp to max valid
+        renderer.set_selected_index(100);
+        assert_eq!(renderer.selected_index(), 2);
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
