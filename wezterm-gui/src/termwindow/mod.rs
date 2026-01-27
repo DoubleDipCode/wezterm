@@ -3762,7 +3762,9 @@ impl TermWindow {
             });
 
             if positions_changed {
-                self.layout_animation = Some(LayoutAnimation::new(from_positions, to_positions));
+                // Get animation duration from config
+                let animation_ms = config::configuration().claude_terminal.tiling.animation_ms as u64;
+                self.layout_animation = Some(LayoutAnimation::new(from_positions, to_positions, animation_ms));
 
                 // Schedule repaint to continue animation
                 if let Some(window) = &self.window {

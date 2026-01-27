@@ -7,8 +7,8 @@ use crate::pane::PaneId;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-/// Animation duration in milliseconds
-pub const ANIMATION_DURATION_MS: u64 = 150;
+/// Default animation duration in milliseconds (used when no config available)
+pub const DEFAULT_DEFAULT_ANIMATION_DURATION_MS: u64 = 150;
 
 /// Default minimum pane width in columns
 pub const DEFAULT_MIN_COLS: u32 = 80;
@@ -441,17 +441,26 @@ pub struct LayoutAnimation {
 }
 
 impl LayoutAnimation {
-    /// Create a new layout animation
+    /// Create a new layout animation with specified duration
     pub fn new(
         from_positions: HashMap<PaneId, AnimatedRect>,
         to_positions: HashMap<PaneId, AnimatedRect>,
+        duration_ms: u64,
     ) -> Self {
         Self {
             from_positions,
             to_positions,
             start_time: Instant::now(),
-            duration: Duration::from_millis(ANIMATION_DURATION_MS),
+            duration: Duration::from_millis(duration_ms),
         }
+    }
+
+    /// Create a new layout animation with default duration
+    pub fn with_default_duration(
+        from_positions: HashMap<PaneId, AnimatedRect>,
+        to_positions: HashMap<PaneId, AnimatedRect>,
+    ) -> Self {
+        Self::new(from_positions, to_positions, DEFAULT_DEFAULT_ANIMATION_DURATION_MS)
     }
 
     /// Calculate the eased progress value using ease-out cubic: t = 1 - (1-t)^3
@@ -1110,10 +1119,28 @@ mod tests {
         let mut to = HashMap::new();
         to.insert(1, AnimatedRect::new(100.0, 0.0, 200.0, 100.0));
 
-        let anim = LayoutAnimation::new(from.clone(), to.clone());
+        let anim = LayoutAnimation::new(from.clone(), to.clone(), DEFAULT_ANIMATION_DURATION_MS);
         assert_eq!(anim.from_positions.len(), 1);
         assert_eq!(anim.to_positions.len(), 1);
-        assert_eq!(anim.duration, Duration::from_millis(ANIMATION_DURATION_MS));
+        assert_eq!(anim.duration, Duration::from_millis(DEFAULT_ANIMATION_DURATION_MS));
+    }
+
+    #[test]
+    fn test_layout_animation_with_custom_duration() {
+        let from = HashMap::new();
+        let to = HashMap::new();
+
+        let anim = LayoutAnimation::new(from, to, 200);
+        assert_eq!(anim.duration, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn test_layout_animation_with_default_duration() {
+        let from = HashMap::new();
+        let to = HashMap::new();
+
+        let anim = LayoutAnimation::with_default_duration(from, to);
+        assert_eq!(anim.duration, Duration::from_millis(DEFAULT_ANIMATION_DURATION_MS));
     }
 
     #[test]
@@ -1123,7 +1150,7 @@ mod tests {
         let mut to = HashMap::new();
         to.insert(1, AnimatedRect::new(0.0, 0.0, 200.0, 300.0));
 
-        let anim = LayoutAnimation::new(from, to);
+        let anim = LayoutAnimation::new(from, to, DEFAULT_ANIMATION_DURATION_MS);
 
         // Should return Some for existing pane
         assert!(anim.current_position(1).is_some());
@@ -1135,13 +1162,13 @@ mod tests {
     fn test_layout_animation_is_complete() {
         let from = HashMap::new();
         let to = HashMap::new();
-        let mut anim = LayoutAnimation::new(from, to);
+        let mut anim = LayoutAnimation::new(from, to, DEFAULT_ANIMATION_DURATION_MS);
 
         // Animation shouldn't be complete immediately
         assert!(!anim.is_complete());
 
         // Set start time to past to simulate completion
-        anim.start_time = Instant::now() - Duration::from_millis(ANIMATION_DURATION_MS + 10);
+        anim.start_time = Instant::now() - Duration::from_millis(DEFAULT_ANIMATION_DURATION_MS + 10);
         assert!(anim.is_complete());
     }
 }
