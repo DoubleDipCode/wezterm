@@ -401,6 +401,25 @@ pub trait Pane: Downcast + Send + Sync {
     fn get_pane_type(&self) -> PaneType {
         PaneType::Terminal
     }
+
+    /// Get the current working directory for this pane.
+    /// This is tracked separately from `get_current_working_dir` for file browser use.
+    /// Returns the home directory by default.
+    fn get_current_dir(&self) -> PathBuf {
+        dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+    }
+
+    /// Set the current working directory for this pane.
+    /// Called when OSC 7 escape sequence is detected.
+    /// Default implementation does nothing.
+    fn set_current_dir(&self, _path: PathBuf) {}
+
+    /// Sync the current_dir field from the terminal's OSC 7 state.
+    /// Returns true if the directory was updated, false otherwise.
+    /// Default implementation does nothing and returns false.
+    fn sync_current_dir_from_osc7(&self) -> bool {
+        false
+    }
 }
 impl_downcast!(Pane);
 

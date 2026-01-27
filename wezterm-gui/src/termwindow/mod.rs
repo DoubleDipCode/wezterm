@@ -2179,6 +2179,10 @@ impl TermWindow {
 
                     pos.pane.set_claude_status(mux_status);
                 }
+
+                // Sync current directory from OSC 7 escape sequence
+                // This updates the pane's current_dir field from the terminal's parsed OSC 7 URL
+                pos.pane.sync_current_dir_from_osc7();
             }
         }
 

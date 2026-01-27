@@ -36,6 +36,7 @@ use wezterm_term::{
 };
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 const PROC_INFO_CACHE_TTL: Duration = Duration::from_millis(300);
 /// Size of the ring buffer for PTY output history (8KB)
@@ -195,6 +196,10 @@ pub struct LocalPane {
     pty_output_buffer: Arc<Mutex<PtyOutputBuffer>>,
     /// Current Claude Code status for this pane (used for visual indicators)
     claude_status: Mutex<ClaudeStatus>,
+    /// Current working directory for this pane, updated via OSC 7 escape sequences.
+    /// Used by the file browser to show the directory contents.
+    /// Defaults to the user's home directory on pane creation.
+    current_dir: Mutex<PathBuf>,
 }
 
 #[async_trait(?Send)]
@@ -901,6 +906,31 @@ impl Pane for LocalPane {
     fn set_claude_status(&self, status: ClaudeStatus) {
         *self.claude_status.lock() = status;
     }
+
+    fn get_current_dir(&self) -> PathBuf {
+        self.current_dir.lock().clone()
+    }
+
+    fn set_current_dir(&self, path: PathBuf) {
+        *self.current_dir.lock() = path;
+    }
+
+    fn sync_current_dir_from_osc7(&self) -> bool {
+        // Get the OSC 7 URL from the terminal's internal state
+        if let Some(url) = self.terminal.lock().get_current_dir() {
+            // Convert the URL to a PathBuf
+            if url.scheme() == "file" {
+                if let Ok(path) = url.to_file_path() {
+                    let mut current = self.current_dir.lock();
+                    if *current != path {
+                        *current = path;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
 }
 
 struct LocalPaneDCSHandler {
@@ -1099,6 +1129,7 @@ impl LocalPane {
             command_description,
             pty_output_buffer: Arc::new(Mutex::new(PtyOutputBuffer::new(PTY_OUTPUT_BUFFER_CAPACITY))),
             claude_status: Mutex::new(ClaudeStatus::Idle),
+            current_dir: Mutex::new(dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"))),
         }
     }
 

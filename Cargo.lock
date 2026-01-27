@@ -3462,6 +3462,7 @@ dependencies = [
  "chrono",
  "config",
  "crossbeam",
+ "dirs-next",
  "downcast-rs",
  "fancy-regex",
  "filedescriptor",
