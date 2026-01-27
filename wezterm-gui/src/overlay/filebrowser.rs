@@ -258,12 +258,18 @@ impl TreeLine {
 pub struct FileBrowserRenderer {
     /// Currently displayed directory
     current_dir: Option<PathBuf>,
-    /// Currently selected item index
+    /// Currently selected item index (into filtered_entries when filtering)
     selected_index: usize,
     /// Cached directory entries (rendered as tree lines)
     entries: Vec<TreeLine>,
     /// Whether to show hidden files
     show_hidden: bool,
+    /// Whether filter mode is active
+    filter_mode: bool,
+    /// Current filter text (for substring matching)
+    filter_text: String,
+    /// Filtered entries (subset of entries matching filter_text)
+    filtered_entries: Vec<TreeLine>,
 }
 
 impl Default for FileBrowserRenderer {
@@ -280,6 +286,9 @@ impl FileBrowserRenderer {
             selected_index: 0,
             entries: Vec::new(),
             show_hidden: false,
+            filter_mode: false,
+            filter_text: String::new(),
+            filtered_entries: Vec::new(),
         }
     }
 
@@ -293,9 +302,28 @@ impl FileBrowserRenderer {
         self.selected_index
     }
 
-    /// Get the entries
+    /// Get the entries (filtered if in filter mode, otherwise all entries)
     pub fn entries(&self) -> &[TreeLine] {
+        if self.filter_mode && !self.filter_text.is_empty() {
+            &self.filtered_entries
+        } else {
+            &self.entries
+        }
+    }
+
+    /// Get all entries regardless of filter state
+    pub fn all_entries(&self) -> &[TreeLine] {
         &self.entries
+    }
+
+    /// Check if filter mode is active
+    pub fn is_filter_mode(&self) -> bool {
+        self.filter_mode
+    }
+
+    /// Get the current filter text
+    pub fn filter_text(&self) -> &str {
+        &self.filter_text
     }
 
     /// Set the current directory and reload entries
@@ -314,6 +342,10 @@ impl FileBrowserRenderer {
             self.entries = dir_entries.iter().map(TreeLine::from_entry).collect();
         } else {
             self.entries.clear();
+        }
+        // Update filtered entries if in filter mode
+        if self.filter_mode {
+            self.apply_filter();
         }
     }
 
@@ -335,6 +367,9 @@ impl FileBrowserRenderer {
     /// and prepares rendering data. The actual pixel rendering would be
     /// done by the GPU layer using this data.
     ///
+    /// When in filter mode, an input line is shown at the bottom with
+    /// the format "/ <filter_text>".
+    ///
     /// # Arguments
     ///
     /// * `pane_rect` - The rectangle defining the file browser's render area
@@ -343,6 +378,7 @@ impl FileBrowserRenderer {
     ///
     /// A vector of strings representing lines to render, each containing
     /// an icon and filename. The selected line index is tracked separately.
+    /// In filter mode, the last line is the filter input.
     pub fn render(&self, pane_rect: Rect) -> Vec<String> {
         // Calculate approximately how many lines fit (assuming ~16px per line)
         let line_height = 16u32;
@@ -352,12 +388,27 @@ impl FileBrowserRenderer {
             0
         };
 
-        // Render visible entries
-        self.entries
+        // Reserve one line for filter input when in filter mode
+        let entry_lines = if self.filter_mode && max_lines > 0 {
+            max_lines - 1
+        } else {
+            max_lines
+        };
+
+        // Render visible entries (use filtered entries when in filter mode)
+        let entries = self.entries();
+        let mut lines: Vec<String> = entries
             .iter()
-            .take(max_lines)
+            .take(entry_lines)
             .map(|line| line.display())
-            .collect()
+            .collect();
+
+        // Add filter input line at the bottom when in filter mode
+        if self.filter_mode {
+            lines.push(format!("/ {}", self.filter_text));
+        }
+
+        lines
     }
 
     /// Set whether to show hidden files
@@ -368,27 +419,119 @@ impl FileBrowserRenderer {
         }
     }
 
+    /// Enter filter mode (/ key)
+    ///
+    /// Activates filter mode which shows an input box at the bottom
+    /// for typing filter text. While in filter mode, the visible
+    /// entries are filtered by case-insensitive substring match.
+    pub fn enter_filter_mode(&mut self) {
+        self.filter_mode = true;
+        self.filter_text.clear();
+        self.filtered_entries = self.entries.clone();
+        self.selected_index = 0;
+    }
+
+    /// Exit filter mode (Esc key)
+    ///
+    /// Clears the filter text and exits filter mode. Returns to
+    /// showing all entries.
+    pub fn exit_filter_mode(&mut self) {
+        self.filter_mode = false;
+        self.filter_text.clear();
+        self.filtered_entries.clear();
+        self.selected_index = 0;
+    }
+
+    /// Update filter text and refresh filtered entries
+    ///
+    /// Called as the user types in filter mode. Updates the filter
+    /// text and recalculates the visible entries based on case-insensitive
+    /// substring matching.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The new filter text
+    pub fn set_filter_text(&mut self, text: String) {
+        self.filter_text = text;
+        self.apply_filter();
+        // Reset selection if it's now out of bounds
+        if self.filtered_entries.is_empty() {
+            self.selected_index = 0;
+        } else if self.selected_index >= self.filtered_entries.len() {
+            self.selected_index = self.filtered_entries.len() - 1;
+        }
+    }
+
+    /// Append a character to the filter text
+    ///
+    /// Convenience method for handling individual key presses in filter mode.
+    pub fn append_filter_char(&mut self, c: char) {
+        self.filter_text.push(c);
+        self.apply_filter();
+        // Reset selection if it's now out of bounds
+        if self.filtered_entries.is_empty() {
+            self.selected_index = 0;
+        } else if self.selected_index >= self.filtered_entries.len() {
+            self.selected_index = self.filtered_entries.len() - 1;
+        }
+    }
+
+    /// Remove the last character from the filter text (backspace)
+    ///
+    /// Returns true if there was a character to remove, false if filter was empty.
+    pub fn backspace_filter(&mut self) -> bool {
+        if self.filter_text.pop().is_some() {
+            self.apply_filter();
+            // Reset selection if needed
+            if !self.filtered_entries.is_empty() && self.selected_index >= self.filtered_entries.len() {
+                self.selected_index = self.filtered_entries.len() - 1;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Apply the current filter to entries
+    fn apply_filter(&mut self) {
+        if self.filter_text.is_empty() {
+            self.filtered_entries = self.entries.clone();
+        } else {
+            let filter_lower = self.filter_text.to_lowercase();
+            self.filtered_entries = self.entries
+                .iter()
+                .filter(|entry| entry.name.to_lowercase().contains(&filter_lower))
+                .cloned()
+                .collect();
+        }
+    }
+
     /// Move selection down (j key), wrapping to top at bottom
     ///
     /// Increments the selected index, wrapping to 0 if at the end
     /// of the entry list. Does nothing if there are no entries.
+    /// Uses filtered entries when in filter mode.
     pub fn move_down(&mut self) {
-        if self.entries.is_empty() {
+        let entries = self.entries();
+        if entries.is_empty() {
             return;
         }
-        self.selected_index = (self.selected_index + 1) % self.entries.len();
+        self.selected_index = (self.selected_index + 1) % entries.len();
     }
 
     /// Move selection up (k key), wrapping to bottom at top
     ///
     /// Decrements the selected index, wrapping to the last entry
     /// if at the top. Does nothing if there are no entries.
+    /// Uses filtered entries when in filter mode.
     pub fn move_up(&mut self) {
-        if self.entries.is_empty() {
+        let entries = self.entries();
+        if entries.is_empty() {
             return;
         }
+        let len = entries.len();
         if self.selected_index == 0 {
-            self.selected_index = self.entries.len() - 1;
+            self.selected_index = len - 1;
         } else {
             self.selected_index -= 1;
         }
@@ -412,22 +555,26 @@ impl FileBrowserRenderer {
 
     /// Get the currently selected entry, if any
     ///
+    /// Returns from filtered entries when in filter mode.
+    ///
     /// # Returns
     ///
     /// The selected TreeLine entry, or None if there are no entries
     pub fn selected_entry(&self) -> Option<&TreeLine> {
-        self.entries.get(self.selected_index)
+        self.entries().get(self.selected_index)
     }
 
     /// Set the selected index directly
     ///
     /// Clamps the index to valid bounds (0 to len-1).
     /// Sets to 0 if entries are empty.
+    /// Uses filtered entries when in filter mode.
     pub fn set_selected_index(&mut self, index: usize) {
-        if self.entries.is_empty() {
+        let entries = self.entries();
+        if entries.is_empty() {
             self.selected_index = 0;
         } else {
-            self.selected_index = index.min(self.entries.len() - 1);
+            self.selected_index = index.min(entries.len() - 1);
         }
     }
 
@@ -1418,6 +1565,284 @@ mod tests {
         // Now should see child_file.txt, not parent_file.txt
         assert!(!renderer.entries().iter().any(|e| e.name == "parent_file.txt"));
         assert!(renderer.entries().iter().any(|e| e.name == "child_file.txt"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Filter mode tests (/ key - US-042)
+
+    #[test]
+    fn test_enter_filter_mode() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_enter");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert!(!renderer.is_filter_mode());
+        assert!(renderer.filter_text().is_empty());
+
+        renderer.enter_filter_mode();
+        assert!(renderer.is_filter_mode());
+        assert!(renderer.filter_text().is_empty());
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_exit_filter_mode() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_exit");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.enter_filter_mode();
+        renderer.set_filter_text("a".to_string());
+        assert!(renderer.is_filter_mode());
+        assert_eq!(renderer.filter_text(), "a");
+
+        renderer.exit_filter_mode();
+        assert!(!renderer.is_filter_mode());
+        assert!(renderer.filter_text().is_empty());
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_by_substring_case_insensitive() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_substring");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("Apple.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("banana.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("pineapple.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert_eq!(renderer.entries().len(), 3);
+
+        renderer.enter_filter_mode();
+
+        // Filter for "apple" (case-insensitive) should match "Apple.txt" and "pineapple.txt"
+        renderer.set_filter_text("apple".to_string());
+        assert_eq!(renderer.entries().len(), 2);
+        assert!(renderer.entries().iter().any(|e| e.name == "Apple.txt"));
+        assert!(renderer.entries().iter().any(|e| e.name == "pineapple.txt"));
+        assert!(!renderer.entries().iter().any(|e| e.name == "banana.txt"));
+
+        // Filter for "BANANA" (case-insensitive) should match "banana.txt"
+        renderer.set_filter_text("BANANA".to_string());
+        assert_eq!(renderer.entries().len(), 1);
+        assert!(renderer.entries().iter().any(|e| e.name == "banana.txt"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_updates_in_real_time() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_realtime");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("testing.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("other.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.enter_filter_mode();
+
+        // Type 't' - should match test.txt, testing.txt, other.txt
+        renderer.append_filter_char('t');
+        assert_eq!(renderer.filter_text(), "t");
+        assert_eq!(renderer.entries().len(), 3);
+
+        // Type 'e' (now "te") - should match test.txt, testing.txt
+        renderer.append_filter_char('e');
+        assert_eq!(renderer.filter_text(), "te");
+        assert_eq!(renderer.entries().len(), 2);
+
+        // Type 's' (now "tes") - should still match test.txt, testing.txt
+        renderer.append_filter_char('s');
+        assert_eq!(renderer.filter_text(), "tes");
+        assert_eq!(renderer.entries().len(), 2);
+
+        // Type 'ting' (now "testing") - should only match testing.txt
+        renderer.set_filter_text("testing".to_string());
+        assert_eq!(renderer.entries().len(), 1);
+        assert_eq!(renderer.entries()[0].name, "testing.txt");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_backspace() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_backspace");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("test.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("other.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.enter_filter_mode();
+
+        renderer.set_filter_text("test".to_string());
+        assert_eq!(renderer.entries().len(), 1);
+
+        // Backspace
+        let result = renderer.backspace_filter();
+        assert!(result);
+        assert_eq!(renderer.filter_text(), "tes");
+        assert_eq!(renderer.entries().len(), 1); // Still matches
+
+        // Clear filter text entirely
+        renderer.set_filter_text("".to_string());
+        assert_eq!(renderer.entries().len(), 2); // All entries shown
+
+        // Backspace on empty should return false
+        let result = renderer.backspace_filter();
+        assert!(!result);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_no_matches() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_nomatch");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.enter_filter_mode();
+
+        renderer.set_filter_text("xyz".to_string());
+        assert_eq!(renderer.entries().len(), 0);
+        assert!(renderer.selected_entry().is_none());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_selection_clamps_when_filtered() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_clamp");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("c.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.set_selected_index(2); // Select third entry
+        assert_eq!(renderer.selected_index(), 2);
+
+        renderer.enter_filter_mode();
+        // Filter to only one entry
+        renderer.set_filter_text("a".to_string());
+        // Selection should clamp to 0 (only valid index)
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_navigation_uses_filtered_entries() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_nav");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("apple.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("apricot.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("banana.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.enter_filter_mode();
+        renderer.set_filter_text("ap".to_string());
+        // Should have 2 entries: apple.txt, apricot.txt
+        assert_eq!(renderer.entries().len(), 2);
+
+        assert_eq!(renderer.selected_index(), 0);
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 1);
+
+        // Wrap around
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_filter_render_shows_input_box() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_filter_render");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        let rect = Rect::new(0, 0, 200, 100);
+
+        // Normal mode - no filter line
+        let lines = renderer.render(rect);
+        assert!(!lines.iter().any(|l| l.starts_with("/")));
+
+        // Filter mode - should have filter input line at bottom
+        renderer.enter_filter_mode();
+        renderer.set_filter_text("test".to_string());
+        let lines = renderer.render(rect);
+        let last_line = lines.last().unwrap();
+        assert_eq!(last_line, "/ test");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_all_entries_returns_unfiltered() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_all_entries");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        renderer.enter_filter_mode();
+        renderer.set_filter_text("a".to_string());
+
+        // entries() should return filtered (1 entry)
+        assert_eq!(renderer.entries().len(), 1);
+        // all_entries() should return all (2 entries)
+        assert_eq!(renderer.all_entries().len(), 2);
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
