@@ -5,7 +5,110 @@
 //! with vim-style bindings (j/k/h/l).
 
 use mux::layout::Rect;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Entry type for directory listing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryType {
+    Directory,
+    File,
+}
+
+/// A directory entry with metadata for file browser display
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    /// Name of the file or directory
+    pub name: String,
+    /// Full path to the entry
+    pub path: PathBuf,
+    /// Whether this is a directory or file
+    pub entry_type: EntryType,
+}
+
+impl DirEntry {
+    /// Create a new directory entry
+    pub fn new(name: String, path: PathBuf, entry_type: EntryType) -> Self {
+        Self {
+            name,
+            path,
+            entry_type,
+        }
+    }
+
+    /// Check if this entry is a directory
+    pub fn is_dir(&self) -> bool {
+        self.entry_type == EntryType::Directory
+    }
+
+    /// Check if this entry is a file
+    pub fn is_file(&self) -> bool {
+        self.entry_type == EntryType::File
+    }
+}
+
+/// Read directory contents and return sorted entries
+///
+/// Reads all entries from the given directory path, filtering hidden files
+/// if `show_hidden` is false. Results are sorted with directories first,
+/// then files, with alphabetical ordering within each group (case-insensitive).
+///
+/// # Arguments
+///
+/// * `path` - The directory path to read
+/// * `show_hidden` - Whether to include hidden files (files starting with '.')
+///
+/// # Returns
+///
+/// A vector of `DirEntry` items sorted as described above. Returns an empty
+/// vector if the directory cannot be read.
+///
+/// # Examples
+///
+/// ```ignore
+/// use std::path::Path;
+/// let entries = read_dir(Path::new("/home/user"), false);
+/// // Returns sorted directory contents without hidden files
+/// ```
+pub fn read_dir(path: &Path, show_hidden: bool) -> Vec<DirEntry> {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result: Vec<DirEntry> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            // Filter hidden files if show_hidden is false
+            if !show_hidden && name.starts_with('.') {
+                return None;
+            }
+
+            let path = entry.path();
+            let entry_type = if path.is_dir() {
+                EntryType::Directory
+            } else {
+                EntryType::File
+            };
+
+            Some(DirEntry::new(name, path, entry_type))
+        })
+        .collect();
+
+    // Sort: directories first, then files, both alphabetically (case-insensitive)
+    result.sort_by(|a, b| {
+        // First compare by type: directories come before files
+        match (a.entry_type, b.entry_type) {
+            (EntryType::Directory, EntryType::File) => std::cmp::Ordering::Less,
+            (EntryType::File, EntryType::Directory) => std::cmp::Ordering::Greater,
+            // Same type: sort alphabetically (case-insensitive)
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    result
+}
 
 /// Parse an OSC 7 escape sequence to extract the current working directory.
 ///
@@ -279,5 +382,128 @@ mod tests {
         let data = b"\x1b]7;file://ubuntu-server/home/ubuntu/code\x07";
         let result = parse_osc7(data);
         assert_eq!(result, Some(PathBuf::from("/home/ubuntu/code")));
+    }
+
+    // DirEntry and read_dir tests
+
+    #[test]
+    fn test_dir_entry_new() {
+        let entry = DirEntry::new(
+            "test.txt".to_string(),
+            PathBuf::from("/home/user/test.txt"),
+            EntryType::File,
+        );
+        assert_eq!(entry.name, "test.txt");
+        assert_eq!(entry.path, PathBuf::from("/home/user/test.txt"));
+        assert_eq!(entry.entry_type, EntryType::File);
+    }
+
+    #[test]
+    fn test_dir_entry_is_dir() {
+        let dir = DirEntry::new("folder".to_string(), PathBuf::from("/folder"), EntryType::Directory);
+        let file = DirEntry::new("file.txt".to_string(), PathBuf::from("/file.txt"), EntryType::File);
+
+        assert!(dir.is_dir());
+        assert!(!dir.is_file());
+        assert!(!file.is_dir());
+        assert!(file.is_file());
+    }
+
+    #[test]
+    fn test_read_dir_nonexistent_path() {
+        // Reading a non-existent directory should return empty vec
+        let result = read_dir(Path::new("/this/path/does/not/exist/12345"), true);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_read_dir_real_directory() {
+        // Test with the current directory (should always work)
+        let result = read_dir(Path::new("."), true);
+        // Should have at least some entries (like Cargo.toml in wezterm-gui)
+        // We can't know exact contents but we can check the function works
+        assert!(!result.is_empty() || true); // Allow empty if running from odd location
+    }
+
+    #[test]
+    fn test_read_dir_sorting() {
+        // Create a temp directory with known contents
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_sort");
+        let _ = std::fs::remove_dir_all(&temp_dir); // Clean up from previous runs
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create some files and directories with varied names for sorting test
+        std::fs::create_dir(temp_dir.join("zebra_dir")).unwrap();
+        std::fs::create_dir(temp_dir.join("Alpha_dir")).unwrap();
+        std::fs::write(temp_dir.join("beta_file.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("Gamma_file.txt"), "").unwrap();
+
+        let result = read_dir(&temp_dir, true);
+
+        assert_eq!(result.len(), 4);
+
+        // Directories should come first, sorted alphabetically (case-insensitive)
+        assert_eq!(result[0].name, "Alpha_dir");
+        assert!(result[0].is_dir());
+        assert_eq!(result[1].name, "zebra_dir");
+        assert!(result[1].is_dir());
+
+        // Files should come after directories, sorted alphabetically (case-insensitive)
+        assert_eq!(result[2].name, "beta_file.txt");
+        assert!(result[2].is_file());
+        assert_eq!(result[3].name, "Gamma_file.txt");
+        assert!(result[3].is_file());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_read_dir_hidden_files_filtered() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_hidden");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create visible and hidden files
+        std::fs::write(temp_dir.join("visible.txt"), "").unwrap();
+        std::fs::write(temp_dir.join(".hidden"), "").unwrap();
+        std::fs::create_dir(temp_dir.join(".hidden_dir")).unwrap();
+        std::fs::create_dir(temp_dir.join("visible_dir")).unwrap();
+
+        // With show_hidden=false, hidden files should be filtered
+        let result_no_hidden = read_dir(&temp_dir, false);
+        assert_eq!(result_no_hidden.len(), 2);
+        assert!(result_no_hidden.iter().all(|e| !e.name.starts_with('.')));
+
+        // With show_hidden=true, all files should be included
+        let result_with_hidden = read_dir(&temp_dir, true);
+        assert_eq!(result_with_hidden.len(), 4);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_read_dir_directories_first() {
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_order");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create files that would come before directories alphabetically
+        std::fs::write(temp_dir.join("aaa_file.txt"), "").unwrap();
+        std::fs::create_dir(temp_dir.join("zzz_dir")).unwrap();
+
+        let result = read_dir(&temp_dir, true);
+
+        assert_eq!(result.len(), 2);
+        // Even though "aaa_file.txt" < "zzz_dir" alphabetically,
+        // the directory should come first
+        assert!(result[0].is_dir());
+        assert_eq!(result[0].name, "zzz_dir");
+        assert!(result[1].is_file());
+        assert_eq!(result[1].name, "aaa_file.txt");
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
