@@ -212,40 +212,160 @@ fn percent_decode(input: &str) -> Option<String> {
     Some(result)
 }
 
+/// Nerdfont folder icon (U+F07B - fa-folder)
+const FOLDER_ICON: char = '\u{f07b}';
+/// Nerdfont file icon (U+F016 - fa-file-o)
+const FILE_ICON: char = '\u{f016}';
+
+/// A rendered line in the file browser tree view
+#[derive(Debug, Clone)]
+pub struct TreeLine {
+    /// The icon character (folder or file)
+    pub icon: char,
+    /// The name of the entry
+    pub name: String,
+    /// Whether this is a directory
+    pub is_dir: bool,
+    /// The full path to this entry
+    pub path: PathBuf,
+}
+
+impl TreeLine {
+    /// Create a new tree line from a directory entry
+    pub fn from_entry(entry: &DirEntry) -> Self {
+        let icon = if entry.is_dir() { FOLDER_ICON } else { FILE_ICON };
+        Self {
+            icon,
+            name: entry.name.clone(),
+            is_dir: entry.is_dir(),
+            path: entry.path.clone(),
+        }
+    }
+
+    /// Format this line for display with icon and name
+    pub fn display(&self) -> String {
+        format!("{} {}", self.icon, self.name)
+    }
+}
+
 /// Renderer for the file browser pane
 ///
 /// The FileBrowserRenderer is responsible for drawing the file browser
 /// contents within a pane rectangle. It displays directory listings,
 /// handles keyboard navigation, and syncs with the focused terminal's
 /// current working directory.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FileBrowserRenderer {
-    /// Currently displayed directory (placeholder for future implementation)
-    _current_dir: Option<std::path::PathBuf>,
-    /// Currently selected item index (placeholder for future implementation)
-    _selected_index: usize,
+    /// Currently displayed directory
+    current_dir: Option<PathBuf>,
+    /// Currently selected item index
+    selected_index: usize,
+    /// Cached directory entries (rendered as tree lines)
+    entries: Vec<TreeLine>,
+    /// Whether to show hidden files
+    show_hidden: bool,
+}
+
+impl Default for FileBrowserRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileBrowserRenderer {
     /// Create a new file browser renderer
     pub fn new() -> Self {
         Self {
-            _current_dir: None,
-            _selected_index: 0,
+            current_dir: None,
+            selected_index: 0,
+            entries: Vec::new(),
+            show_hidden: false,
         }
+    }
+
+    /// Get the current directory
+    pub fn current_dir(&self) -> Option<&Path> {
+        self.current_dir.as_deref()
+    }
+
+    /// Get the selected index
+    pub fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    /// Get the entries
+    pub fn entries(&self) -> &[TreeLine] {
+        &self.entries
+    }
+
+    /// Set the current directory and reload entries
+    pub fn set_current_dir(&mut self, path: PathBuf) {
+        if self.current_dir.as_ref() != Some(&path) {
+            self.current_dir = Some(path.clone());
+            self.reload_entries();
+            self.selected_index = 0;
+        }
+    }
+
+    /// Reload directory entries from the current directory
+    fn reload_entries(&mut self) {
+        if let Some(dir) = &self.current_dir {
+            let dir_entries = read_dir(dir, self.show_hidden);
+            self.entries = dir_entries.iter().map(TreeLine::from_entry).collect();
+        } else {
+            self.entries.clear();
+        }
+    }
+
+    /// Get the tree lines to render for the current directory
+    ///
+    /// Returns a slice of TreeLine entries that can be rendered
+    /// with icon + name format. Each line represents one file or directory.
+    ///
+    /// # Returns
+    ///
+    /// A slice of TreeLine entries, or empty if no directory is set.
+    pub fn get_tree_lines(&self) -> &[TreeLine] {
+        &self.entries
     }
 
     /// Render the file browser contents within the given pane rectangle
     ///
-    /// This is currently a stub implementation that does nothing.
-    /// Future implementation will render directory contents with icons,
-    /// highlighting for the selected item, and git status indicators.
+    /// This method calculates visible lines based on the pane height
+    /// and prepares rendering data. The actual pixel rendering would be
+    /// done by the GPU layer using this data.
     ///
     /// # Arguments
     ///
-    /// * `_pane_rect` - The rectangle defining the file browser's render area
-    pub fn render(&self, _pane_rect: Rect) {
-        // Stub implementation - rendering will be implemented in US-037
+    /// * `pane_rect` - The rectangle defining the file browser's render area
+    ///
+    /// # Returns
+    ///
+    /// A vector of strings representing lines to render, each containing
+    /// an icon and filename. The selected line index is tracked separately.
+    pub fn render(&self, pane_rect: Rect) -> Vec<String> {
+        // Calculate approximately how many lines fit (assuming ~16px per line)
+        let line_height = 16u32;
+        let max_lines = if pane_rect.height > 0 {
+            (pane_rect.height / line_height) as usize
+        } else {
+            0
+        };
+
+        // Render visible entries
+        self.entries
+            .iter()
+            .take(max_lines)
+            .map(|line| line.display())
+            .collect()
+    }
+
+    /// Set whether to show hidden files
+    pub fn set_show_hidden(&mut self, show: bool) {
+        if self.show_hidden != show {
+            self.show_hidden = show;
+            self.reload_entries();
+        }
     }
 }
 
@@ -256,23 +376,114 @@ mod tests {
     #[test]
     fn test_file_browser_renderer_new() {
         let renderer = FileBrowserRenderer::new();
-        assert!(renderer._current_dir.is_none());
-        assert_eq!(renderer._selected_index, 0);
+        assert!(renderer.current_dir().is_none());
+        assert_eq!(renderer.selected_index(), 0);
     }
 
     #[test]
     fn test_file_browser_renderer_default() {
         let renderer = FileBrowserRenderer::default();
-        assert!(renderer._current_dir.is_none());
-        assert_eq!(renderer._selected_index, 0);
+        assert!(renderer.current_dir().is_none());
+        assert_eq!(renderer.selected_index(), 0);
     }
 
     #[test]
-    fn test_render_stub() {
-        let renderer = FileBrowserRenderer::new();
+    fn test_render_returns_lines() {
+        let mut renderer = FileBrowserRenderer::new();
         let rect = Rect::new(0, 0, 200, 600);
-        // Should not panic
-        renderer.render(rect);
+
+        // With no directory set, render should return empty
+        let lines = renderer.render(rect);
+        assert!(lines.is_empty());
+
+        // Set a directory and verify render returns lines
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_render");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::create_dir(temp_dir.join("folder")).unwrap();
+        std::fs::write(temp_dir.join("file.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        let lines = renderer.render(rect);
+
+        assert_eq!(lines.len(), 2);
+        // Directory should come first with folder icon
+        assert!(lines[0].contains("folder"));
+        assert!(lines[0].contains(FOLDER_ICON));
+        // File should come second with file icon
+        assert!(lines[1].contains("file.txt"));
+        assert!(lines[1].contains(FILE_ICON));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_tree_line_from_entry() {
+        let dir_entry = DirEntry::new("mydir".to_string(), PathBuf::from("/mydir"), EntryType::Directory);
+        let file_entry = DirEntry::new("myfile.txt".to_string(), PathBuf::from("/myfile.txt"), EntryType::File);
+
+        let dir_line = TreeLine::from_entry(&dir_entry);
+        assert_eq!(dir_line.icon, FOLDER_ICON);
+        assert_eq!(dir_line.name, "mydir");
+        assert!(dir_line.is_dir);
+
+        let file_line = TreeLine::from_entry(&file_entry);
+        assert_eq!(file_line.icon, FILE_ICON);
+        assert_eq!(file_line.name, "myfile.txt");
+        assert!(!file_line.is_dir);
+    }
+
+    #[test]
+    fn test_tree_line_display() {
+        let entry = DirEntry::new("test".to_string(), PathBuf::from("/test"), EntryType::Directory);
+        let line = TreeLine::from_entry(&entry);
+        let display = line.display();
+        assert!(display.starts_with(FOLDER_ICON));
+        assert!(display.contains("test"));
+    }
+
+    #[test]
+    fn test_set_current_dir_reloads_entries() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_setdir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("a.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "").unwrap();
+
+        assert!(renderer.entries().is_empty());
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert_eq!(renderer.entries().len(), 2);
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_set_show_hidden() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_hidden_render");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("visible.txt"), "").unwrap();
+        std::fs::write(temp_dir.join(".hidden"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        assert_eq!(renderer.entries().len(), 1); // Only visible file
+
+        renderer.set_show_hidden(true);
+        assert_eq!(renderer.entries().len(), 2); // Both files
+
+        renderer.set_show_hidden(false);
+        assert_eq!(renderer.entries().len(), 1); // Only visible file again
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     // OSC 7 parsing tests
