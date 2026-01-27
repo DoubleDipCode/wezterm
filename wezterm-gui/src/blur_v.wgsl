@@ -14,14 +14,14 @@ struct VertexOutput {
     @location(0) tex_coord: vec2<f32>,
 };
 
-// Uniforms for texture dimensions
+// Uniforms for texture dimensions and glow settings
 struct BlurUniform {
     // Texture dimensions (width, height) for calculating texel offsets
     tex_size: vec2<f32>,
-    // Blur radius multiplier (default 1.0)
+    // Blur radius multiplier (from config.border.glow_radius)
     blur_scale: f32,
-    // Padding for alignment
-    _padding: f32,
+    // Glow opacity from 0.0 to 1.0 (from config.border.glow_opacity)
+    glow_opacity: f32,
 };
 @group(0) @binding(0) var<uniform> uniforms: BlurUniform;
 
@@ -51,9 +51,6 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Glow opacity multiplier - makes glow visible but subtle (50% opacity)
-const GLOW_OPACITY: f32 = 0.5;
-
 // Fragment shader - applies vertical Gaussian blur with glow opacity
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -73,8 +70,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     color += textureSample(input_tex, input_sampler, in.tex_coord + texel_offset * 3.0) * WEIGHT_7;
     color += textureSample(input_tex, input_sampler, in.tex_coord + texel_offset * 4.0) * WEIGHT_8;
 
-    // Apply glow opacity multiplier - makes glow visible but subtle
-    color.a *= GLOW_OPACITY;
+    // Apply glow opacity multiplier from config - makes glow visible but subtle
+    color.a *= uniforms.glow_opacity;
 
     return color;
 }

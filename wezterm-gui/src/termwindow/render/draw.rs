@@ -1,5 +1,5 @@
 use crate::colorease::ColorEaseUniform;
-use crate::termwindow::render::pane_border::{BlurUniform, BorderUniform, BLUR_RADIUS};
+use crate::termwindow::render::pane_border::{BlurUniform, BorderUniform};
 use crate::termwindow::webgpu::ShaderUniform;
 use crate::termwindow::RenderFrame;
 use crate::uniforms::UniformBuilder;
@@ -236,11 +236,12 @@ impl crate::TermWindow {
             render_pass.draw(0..vertices.len() as u32, 0..1);
         }
 
-        // Create blur uniform
+        // Create blur uniform with values from config
+        let border_config = &config::configuration().claude_terminal.border;
         let blur_uniform = BlurUniform {
             tex_size: [glow_textures.width as f32, glow_textures.height as f32],
-            blur_scale: BLUR_RADIUS,
-            _padding: 0.0,
+            blur_scale: border_config.glow_radius as f32,
+            glow_opacity: border_config.glow_opacity,
         };
         let blur_uniform_bind_group = webgpu.blur_pipeline.create_uniform_bind_group(
             &webgpu.device,

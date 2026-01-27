@@ -17,19 +17,16 @@ use mux::tab::PositionedPane;
 use wgpu::util::DeviceExt;
 use window::color::LinearRgba;
 
-/// Blur radius multiplier for the glow effect (8 pixels as per spec)
-pub const BLUR_RADIUS: f32 = 8.0;
-
 /// Uniform data passed to the blur shaders.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BlurUniform {
     /// Texture dimensions (width, height) for calculating texel offsets
     pub tex_size: [f32; 2],
-    /// Blur radius multiplier (default 1.0)
+    /// Blur radius multiplier (from config.border.glow_radius)
     pub blur_scale: f32,
-    /// Padding for alignment
-    pub _padding: f32,
+    /// Glow opacity from 0.0 to 1.0 (from config.border.glow_opacity)
+    pub glow_opacity: f32,
 }
 
 /// Vertex format for fullscreen quad blur passes.
@@ -569,8 +566,10 @@ pub fn calculate_border_quads(
     vec![top, right, bottom, left]
 }
 
-/// Border width in pixels for Claude Code status borders.
-const BORDER_WIDTH_PX: f32 = 4.0;
+/// Returns the border width from config, defaulting to 4px.
+fn get_border_width() -> f32 {
+    config::configuration().claude_terminal.border.width as f32
+}
 
 /// Generates border vertices for a quad with the given color and status.
 /// Returns 6 vertices (2 triangles) for the quad.
@@ -644,7 +643,7 @@ impl crate::TermWindow {
             let pane_width = pos.pixel_width as f32;
             let pane_height = pos.pixel_height as f32;
 
-            let quads = calculate_border_quads(pane_x, pane_y, pane_width, pane_height, BORDER_WIDTH_PX);
+            let quads = calculate_border_quads(pane_x, pane_y, pane_width, pane_height, get_border_width());
 
             result.push(PaneBorderData {
                 quads,
@@ -720,7 +719,7 @@ impl crate::TermWindow {
         let pane_height = pos.pixel_height as f32;
 
         // 4. Calculate border quads around the pane
-        let quads = calculate_border_quads(pane_x, pane_y, pane_width, pane_height, BORDER_WIDTH_PX);
+        let quads = calculate_border_quads(pane_x, pane_y, pane_width, pane_height, get_border_width());
 
         // 5. Render quads using filled_rectangle on layer 2 (on top of content)
         for quad in &quads {
