@@ -22,6 +22,81 @@ pub struct ShaderUniform {
     // sampler2D atlas_linear_sampler;
 }
 
+/// Intermediate textures for glow blur effect (two-pass Gaussian blur)
+pub struct GlowTextures {
+    /// Texture where borders are rendered before blur
+    pub border_texture: wgpu::Texture,
+    /// Texture view for border_texture
+    pub border_view: wgpu::TextureView,
+    /// Intermediate texture for horizontal blur pass output
+    pub blur_temp: wgpu::Texture,
+    /// Texture view for blur_temp
+    pub blur_temp_view: wgpu::TextureView,
+    /// Current dimensions of the textures
+    pub width: u32,
+    pub height: u32,
+}
+
+impl GlowTextures {
+    /// Create glow textures with the specified dimensions.
+    /// Format is RGBA8UnormSrgb to match the surface format.
+    /// Both textures are usable as render targets and shader inputs.
+    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+
+        let border_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Glow Border Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        });
+
+        let blur_temp = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Glow Blur Temp Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        });
+
+        let border_view = border_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let blur_temp_view = blur_temp.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            border_texture,
+            border_view,
+            blur_temp,
+            blur_temp_view,
+            width,
+            height,
+        }
+    }
+
+    /// Recreate textures if dimensions have changed
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        *self = Self::new(device, width, height);
+    }
+}
+
 pub struct WebGpuState {
     pub adapter_info: wgpu::AdapterInfo,
     pub downlevel_caps: wgpu::DownlevelCapabilities,
@@ -38,6 +113,8 @@ pub struct WebGpuState {
     pub handle: RawHandlePair,
     /// Pipeline for rendering Claude Code status borders around panes
     pub border_pipeline: BorderPipeline,
+    /// Intermediate textures for glow blur effect
+    pub glow_textures: RefCell<GlowTextures>,
 }
 
 pub struct RawHandlePair {
@@ -498,6 +575,13 @@ impl WebGpuState {
         // Create the border pipeline for Claude Code status borders
         let border_pipeline = BorderPipeline::new(&device, config.format);
 
+        // Create glow textures for blur effect (window-sized)
+        let glow_textures = GlowTextures::new(
+            &device,
+            config.width.max(1),
+            config.height.max(1),
+        );
+
         Ok(Self {
             adapter_info,
             downlevel_caps,
@@ -513,6 +597,7 @@ impl WebGpuState {
             texture_nearest_sampler,
             texture_linear_sampler,
             border_pipeline,
+            glow_textures: RefCell::new(glow_textures),
         })
     }
 
@@ -563,6 +648,11 @@ impl WebGpuState {
             // panic in that case
             // <https://github.com/wezterm/wezterm/issues/2881>
             self.surface.configure(&self.device, &config);
+
+            // Resize glow textures to match new window dimensions
+            self.glow_textures
+                .borrow_mut()
+                .resize(&self.device, config.width, config.height);
         }
     }
 }
