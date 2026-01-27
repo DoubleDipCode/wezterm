@@ -118,39 +118,38 @@ impl StatusColor {
         })
     }
 
-    /// Get the StatusColor for a given ClaudeStatus.
+    /// Get the StatusColor for a given ClaudeStatus using default colors.
     ///
-    /// Color mapping:
+    /// Default color mapping:
     /// - Idle: #ff5555 (red)
     /// - Running: #50fa7b (green)
     /// - AwaitingPermission: #f1fa8c (yellow)
     /// - Error: #ffb86c (orange)
+    ///
+    /// For user-configurable colors, use `from_status_with_config()` instead.
     pub fn from_status(status: ClaudeStatus) -> Self {
-        match status {
-            ClaudeStatus::Idle => Self {
-                r: 1.0,           // 0xff = 255
-                g: 85.0 / 255.0,  // 0x55 = 85
-                b: 85.0 / 255.0,  // 0x55 = 85
-                a: 1.0,
-            },
-            ClaudeStatus::Running => Self {
-                r: 80.0 / 255.0,  // 0x50 = 80
-                g: 250.0 / 255.0, // 0xfa = 250
-                b: 123.0 / 255.0, // 0x7b = 123
-                a: 1.0,
-            },
-            ClaudeStatus::AwaitingPermission => Self {
-                r: 241.0 / 255.0, // 0xf1 = 241
-                g: 250.0 / 255.0, // 0xfa = 250
-                b: 140.0 / 255.0, // 0x8c = 140
-                a: 1.0,
-            },
-            ClaudeStatus::Error => Self {
-                r: 1.0,           // 0xff = 255
-                g: 184.0 / 255.0, // 0xb8 = 184
-                b: 108.0 / 255.0, // 0x6c = 108
-                a: 1.0,
-            },
+        Self::from_status_with_config(status, &config::configuration().claude_terminal.status_colors)
+    }
+
+    /// Get the StatusColor for a given ClaudeStatus using user-configured colors.
+    ///
+    /// Reads colors from the provided ClaudeStatusColors config.
+    pub fn from_status_with_config(
+        status: ClaudeStatus,
+        colors: &config::claude_terminal::ClaudeStatusColors,
+    ) -> Self {
+        let rgba = match status {
+            ClaudeStatus::Idle => &colors.idle,
+            ClaudeStatus::Running => &colors.running,
+            ClaudeStatus::AwaitingPermission => &colors.awaiting_permission,
+            ClaudeStatus::Error => &colors.error,
+        };
+        // RgbaColor derefs to SrgbaTuple which has (r, g, b, a) as f32 fields
+        Self {
+            r: rgba.0,
+            g: rgba.1,
+            b: rgba.2,
+            a: rgba.3,
         }
     }
 }
