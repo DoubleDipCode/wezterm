@@ -21,6 +21,21 @@ use wezterm_term::{
     StableRowIndex, TerminalConfiguration, TerminalSize,
 };
 
+/// Represents the current status of a Claude Code session.
+/// Used for visual indicators (colored borders, glow effects) in the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClaudeStatus {
+    /// Claude Code is idle, waiting for user input.
+    #[default]
+    Idle,
+    /// Claude Code is actively processing/running.
+    Running,
+    /// Claude Code is waiting for user permission to proceed.
+    AwaitingPermission,
+    /// Claude Code has encountered an error.
+    Error,
+}
+
 static PANE_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
 pub type PaneId = usize;
 
@@ -348,6 +363,16 @@ pub trait Pane: Downcast + Send + Sync {
     fn get_pty_output_for_status_detection(&self) -> Option<String> {
         None
     }
+
+    /// Get the current Claude Code status for this pane.
+    /// Returns `ClaudeStatus::Idle` by default.
+    fn get_claude_status(&self) -> ClaudeStatus {
+        ClaudeStatus::Idle
+    }
+
+    /// Set the Claude Code status for this pane.
+    /// Default implementation does nothing.
+    fn set_claude_status(&self, _status: ClaudeStatus) {}
 }
 impl_downcast!(Pane);
 

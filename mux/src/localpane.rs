@@ -1,7 +1,7 @@
 use crate::domain::DomainId;
 use crate::pane::{
-    CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId, Pattern,
-    SearchResult, WithPaneLines,
+    CachePolicy, ClaudeStatus, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId,
+    Pattern, SearchResult, WithPaneLines,
 };
 use crate::renderable::*;
 use crate::tmux::{TmuxDomain, TmuxDomainState};
@@ -193,6 +193,8 @@ pub struct LocalPane {
     command_description: String,
     /// Ring buffer storing the last 8KB of PTY output for status detection
     pty_output_buffer: Arc<Mutex<PtyOutputBuffer>>,
+    /// Current Claude Code status for this pane (used for visual indicators)
+    claude_status: Mutex<ClaudeStatus>,
 }
 
 #[async_trait(?Send)]
@@ -891,6 +893,14 @@ impl Pane for LocalPane {
     fn get_pty_output_for_status_detection(&self) -> Option<String> {
         Some(self.pty_output_buffer.lock().as_string())
     }
+
+    fn get_claude_status(&self) -> ClaudeStatus {
+        *self.claude_status.lock()
+    }
+
+    fn set_claude_status(&self, status: ClaudeStatus) {
+        *self.claude_status.lock() = status;
+    }
 }
 
 struct LocalPaneDCSHandler {
@@ -1088,6 +1098,7 @@ impl LocalPane {
             leader: Arc::new(Mutex::new(None)),
             command_description,
             pty_output_buffer: Arc::new(Mutex::new(PtyOutputBuffer::new(PTY_OUTPUT_BUFFER_CAPACITY))),
+            claude_status: Mutex::new(ClaudeStatus::Idle),
         }
     }
 
