@@ -431,6 +431,41 @@ impl FileBrowserRenderer {
         }
     }
 
+    /// Navigate to the parent directory (h key)
+    ///
+    /// Changes the current directory to its parent directory. If already
+    /// at the filesystem root, this method does nothing. After navigating,
+    /// the entry list is reloaded and the selection is reset to index 0.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - If successfully navigated to parent directory
+    /// * `false` - If already at root or no directory is set
+    pub fn go_to_parent(&mut self) -> bool {
+        let current = match &self.current_dir {
+            Some(dir) => dir.clone(),
+            None => return false,
+        };
+
+        // Get the parent directory
+        let parent = match current.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return false, // Already at root
+        };
+
+        // Check if parent is different from current (handles root edge cases)
+        if parent == current {
+            return false;
+        }
+
+        // Update to parent directory
+        self.current_dir = Some(parent);
+        self.reload_entries();
+        self.selected_index = 0;
+
+        true
+    }
+
     /// Open the selected file in the user's editor (Enter key)
     ///
     /// If the selected entry is a file (not a directory), this method
@@ -1131,6 +1166,112 @@ mod tests {
             Some(val) => std::env::set_var("EDITOR", val),
             None => std::env::remove_var("EDITOR"),
         }
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Go to parent directory tests (h key - US-040)
+
+    #[test]
+    fn test_go_to_parent_returns_false_on_no_directory() {
+        let mut renderer = FileBrowserRenderer::new();
+        assert!(!renderer.go_to_parent());
+    }
+
+    #[test]
+    fn test_go_to_parent_navigates_to_parent() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_parent");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("file.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("parent_file.txt"), "").unwrap();
+
+        // Start in subdir
+        renderer.set_current_dir(subdir.clone());
+        assert_eq!(renderer.current_dir(), Some(subdir.as_path()));
+        assert_eq!(renderer.entries().len(), 1); // file.txt
+
+        // Navigate to parent
+        let result = renderer.go_to_parent();
+        assert!(result);
+        assert_eq!(renderer.current_dir(), Some(temp_dir.as_path()));
+        // Parent should have subdir and parent_file.txt
+        assert_eq!(renderer.entries().len(), 2);
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_go_to_parent_returns_false_at_root() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        // Set to root directory
+        renderer.set_current_dir(PathBuf::from("/"));
+        assert_eq!(renderer.current_dir(), Some(Path::new("/")));
+
+        // Should return false - already at root
+        let result = renderer.go_to_parent();
+        assert!(!result);
+        // Should still be at root
+        assert_eq!(renderer.current_dir(), Some(Path::new("/")));
+    }
+
+    #[test]
+    fn test_go_to_parent_resets_selection_to_zero() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_parent_reset");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("a.txt"), "").unwrap();
+        std::fs::write(subdir.join("b.txt"), "").unwrap();
+        std::fs::write(subdir.join("c.txt"), "").unwrap();
+
+        renderer.set_current_dir(subdir.clone());
+        // Move selection to non-zero index
+        renderer.move_down();
+        renderer.move_down();
+        assert_eq!(renderer.selected_index(), 2);
+
+        // Navigate to parent
+        renderer.go_to_parent();
+        // Selection should reset to 0
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_go_to_parent_reloads_entries() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_parent_reload");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("child_file.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("parent_file.txt"), "").unwrap();
+
+        renderer.set_current_dir(subdir.clone());
+        // In subdir, should have child_file.txt
+        assert!(renderer.entries().iter().any(|e| e.name == "child_file.txt"));
+        assert!(!renderer.entries().iter().any(|e| e.name == "parent_file.txt"));
+
+        renderer.go_to_parent();
+        // Now should have subdir and parent_file.txt, not child_file.txt
+        assert!(!renderer.entries().iter().any(|e| e.name == "child_file.txt"));
+        assert!(renderer.entries().iter().any(|e| e.name == "parent_file.txt"));
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
