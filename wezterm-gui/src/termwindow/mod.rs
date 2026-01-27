@@ -479,6 +479,8 @@ pub struct TermWindow {
     file_browser_current_dir: PathBuf,
     /// Last focused pane ID for detecting focus changes
     last_focused_pane_id: Option<PaneId>,
+    /// Whether the file browser pane is visible
+    file_browser_visible: bool,
 }
 
 impl TermWindow {
@@ -809,6 +811,7 @@ impl TermWindow {
             layout_animation: None,
             file_browser_current_dir: dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/")),
             last_focused_pane_id: None,
+            file_browser_visible: true,
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -3305,6 +3308,10 @@ impl TermWindow {
             AutoTileResizePane(direction, amount) => {
                 log::trace!("AutoTileResizePane {:?} {}", direction, amount);
                 self.auto_tile_resize_pane(*direction, *amount);
+            }
+            ToggleFileBrowser => {
+                log::trace!("ToggleFileBrowser");
+                self.toggle_file_browser();
             }
         };
         Ok(PerformAssignmentResult::Handled)

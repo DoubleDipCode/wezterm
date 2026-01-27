@@ -656,6 +656,8 @@ pub enum KeyAssignment {
     },
     /// Auto-tiling: resize pane manually and lock it from auto-tiling
     AutoTileResizePane(PaneDirection, usize),
+    /// Toggle file browser pane visibility
+    ToggleFileBrowser,
 }
 impl_lua_conversion_dynamic!(KeyAssignment);
 

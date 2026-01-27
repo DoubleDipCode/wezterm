@@ -2068,6 +2068,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: None,
         },
         AutoTileResizePane(PaneDirection::Next | PaneDirection::Prev, _) => return None,
+        ToggleFileBrowser => CommandDef {
+            brief: "Toggle File Browser".into(),
+            doc: "Show or hide the file browser pane".into(),
+            keys: vec![(Modifiers::SUPER.union(Modifiers::SHIFT), "f".into())],
+            args: &[],
+            menubar: &["View"],
+            icon: Some("md_folder"),
+        },
     })
 }
 
@@ -2103,6 +2111,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         AutoTileResizePane(PaneDirection::Right, 1),
         AutoTileResizePane(PaneDirection::Up, 1),
         AutoTileResizePane(PaneDirection::Down, 1),
+        ToggleFileBrowser,
         CloseCurrentTab { confirm: true },
         CloseCurrentPane { confirm: true },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain),

@@ -309,4 +309,29 @@ impl super::TermWindow {
             window.invalidate();
         }
     }
+
+    /// Toggle the visibility of the file browser pane.
+    /// When hidden, terminal panes expand to fill the space.
+    /// When shown, layout recalculates to include the file browser.
+    /// The file browser state persists while hidden.
+    pub fn toggle_file_browser(&mut self) {
+        self.file_browser_visible = !self.file_browser_visible;
+
+        log::trace!(
+            "toggle_file_browser: visibility now {}",
+            if self.file_browser_visible {
+                "shown"
+            } else {
+                "hidden"
+            }
+        );
+
+        // Trigger layout recalculation and window invalidation
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
+        }
+
+        // Trigger auto-tile layout recalculation if needed
+        self.schedule_auto_tile_layout();
+    }
 }
