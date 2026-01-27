@@ -48,7 +48,7 @@ use mux::tab::{
     PositionedPane, PositionedSplit, SplitDirection, SplitRequest, SplitSize as MuxSplitSize, Tab,
     TabId,
 };
-use mux::layout::TilingLayout;
+use mux::layout::{AnimatedRect, LayoutAnimation, TilingLayout};
 use mux::window::WindowId as MuxWindowId;
 use mux::{Mux, MuxNotification};
 use mux_lua::MuxPane;
@@ -152,6 +152,8 @@ pub enum TermWindowNotif {
     },
     /// Trigger Claude Code status detection for all panes
     ClaudeStatusUpdate,
+    /// Start layout animation with captured from_positions
+    LayoutAnimationStart(std::collections::HashMap<PaneId, AnimatedRect>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,6 +472,8 @@ pub struct TermWindow {
     config_subscription: Option<config::ConfigSubscription>,
     /// Auto-tiling layout state for managing pane arrangement
     tiling_layout: TilingLayout,
+    /// Animation state for smooth pane resize transitions (150ms ease-out)
+    layout_animation: Option<LayoutAnimation>,
 }
 
 impl TermWindow {
@@ -797,6 +801,7 @@ impl TermWindow {
             modal: RefCell::new(None),
             opengl_info: None,
             tiling_layout: TilingLayout::new(),
+            layout_animation: None,
         };
 
         let tw = Rc::new(RefCell::new(myself));
@@ -1332,6 +1337,9 @@ impl TermWindow {
             }
             TermWindowNotif::ClaudeStatusUpdate => {
                 self.perform_claude_status_detection();
+            }
+            TermWindowNotif::LayoutAnimationStart(from_positions) => {
+                self.start_layout_animation(from_positions);
             }
             TermWindowNotif::GetSelectionForPane { pane_id, tx } => {
                 let mux = Mux::get();
@@ -3619,7 +3627,105 @@ impl TermWindow {
             None => return vec![],
         };
 
-        self.get_pos_panes_for_tab(&tab)
+        let mut panes = self.get_pos_panes_for_tab(&tab);
+
+        // Apply animation interpolation if animation is in progress
+        if let Some(ref animation) = self.layout_animation {
+            if !animation.is_complete() {
+                self.apply_animation_to_panes(&mut panes, animation);
+            }
+        }
+
+        panes
+    }
+
+    /// Apply animation interpolation to pane positions
+    fn apply_animation_to_panes(&self, panes: &mut [PositionedPane], animation: &LayoutAnimation) {
+        let cell_width = self.render_metrics.cell_size.width as f32;
+        let cell_height = self.render_metrics.cell_size.height as f32;
+
+        for pane in panes.iter_mut() {
+            let pane_id = pane.pane.pane_id();
+            if let Some(animated_pos) = animation.current_position(pane_id) {
+                // Convert pixel positions back to cell positions for left/top
+                // The animated positions are in pixels, but PositionedPane uses cells for left/top
+                pane.left = (animated_pos.x / cell_width).round() as usize;
+                pane.top = (animated_pos.y / cell_height).round() as usize;
+                pane.pixel_width = animated_pos.width.round() as usize;
+                pane.pixel_height = animated_pos.height.round() as usize;
+            }
+        }
+    }
+
+    /// Capture current pane positions as AnimatedRect for animation
+    fn capture_pane_positions(&self) -> std::collections::HashMap<PaneId, AnimatedRect> {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => return std::collections::HashMap::new(),
+        };
+
+        let panes = tab.iter_panes();
+        let cell_width = self.render_metrics.cell_size.width as f32;
+        let cell_height = self.render_metrics.cell_size.height as f32;
+
+        let mut positions = std::collections::HashMap::new();
+        for pos in panes {
+            let pane_id = pos.pane.pane_id();
+            // Store positions in pixels for consistent animation
+            let x = pos.left as f32 * cell_width;
+            let y = pos.top as f32 * cell_height;
+            positions.insert(
+                pane_id,
+                AnimatedRect::new(x, y, pos.pixel_width as f32, pos.pixel_height as f32),
+            );
+        }
+        positions
+    }
+
+    /// Start a layout animation from current positions to new positions
+    pub fn start_layout_animation(&mut self, from_positions: std::collections::HashMap<PaneId, AnimatedRect>) {
+        // Wait a brief moment for mux to update, then capture new positions
+        // We'll capture the new positions after a small delay in the notification handler
+        // For now, capture what we can and schedule the update
+        let to_positions = self.capture_pane_positions();
+
+        // Only animate if we have matching panes and positions actually changed
+        if !from_positions.is_empty() && !to_positions.is_empty() {
+            let positions_changed = from_positions.iter().any(|(id, from_rect)| {
+                if let Some(to_rect) = to_positions.get(id) {
+                    (from_rect.x - to_rect.x).abs() > 0.5
+                        || (from_rect.y - to_rect.y).abs() > 0.5
+                        || (from_rect.width - to_rect.width).abs() > 0.5
+                        || (from_rect.height - to_rect.height).abs() > 0.5
+                } else {
+                    true
+                }
+            });
+
+            if positions_changed {
+                self.layout_animation = Some(LayoutAnimation::new(from_positions, to_positions));
+
+                // Schedule repaint to continue animation
+                if let Some(window) = &self.window {
+                    window.invalidate();
+                }
+            }
+        }
+    }
+
+    /// Check if layout animation is in progress and schedule next frame if needed
+    pub fn update_layout_animation(&mut self) {
+        if let Some(ref animation) = self.layout_animation {
+            if animation.is_complete() {
+                self.layout_animation = None;
+            } else {
+                // Schedule next animation frame
+                if let Some(window) = &self.window {
+                    window.invalidate();
+                }
+            }
+        }
     }
 
     /// if pane_id.is_none(), removes any overlay for the specified tab.

@@ -5,6 +5,10 @@
 
 use crate::pane::PaneId;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+/// Animation duration in milliseconds
+pub const ANIMATION_DURATION_MS: u64 = 150;
 
 /// Default minimum pane width in columns
 pub const DEFAULT_MIN_COLS: u32 = 80;
@@ -385,6 +389,113 @@ impl TilingLayout {
 impl Default for TilingLayout {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Animated rectangle with floating point coordinates for smooth interpolation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimatedRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl AnimatedRect {
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self { x, y, width, height }
+    }
+
+    /// Create an AnimatedRect from a Rect (integer coordinates)
+    pub fn from_rect(rect: &Rect) -> Self {
+        Self {
+            x: rect.x as f32,
+            y: rect.y as f32,
+            width: rect.width as f32,
+            height: rect.height as f32,
+        }
+    }
+
+    /// Interpolate between two rectangles using a 0.0-1.0 progress value
+    pub fn lerp(from: &AnimatedRect, to: &AnimatedRect, t: f32) -> Self {
+        Self {
+            x: from.x + (to.x - from.x) * t,
+            y: from.y + (to.y - from.y) * t,
+            width: from.width + (to.width - from.width) * t,
+            height: from.height + (to.height - from.height) * t,
+        }
+    }
+}
+
+/// Stores animation state for smooth pane resize transitions
+#[derive(Debug, Clone)]
+pub struct LayoutAnimation {
+    /// Starting positions of panes (before layout change)
+    pub from_positions: HashMap<PaneId, AnimatedRect>,
+    /// Target positions of panes (after layout change)
+    pub to_positions: HashMap<PaneId, AnimatedRect>,
+    /// When the animation started
+    pub start_time: Instant,
+    /// Animation duration
+    pub duration: Duration,
+}
+
+impl LayoutAnimation {
+    /// Create a new layout animation
+    pub fn new(
+        from_positions: HashMap<PaneId, AnimatedRect>,
+        to_positions: HashMap<PaneId, AnimatedRect>,
+    ) -> Self {
+        Self {
+            from_positions,
+            to_positions,
+            start_time: Instant::now(),
+            duration: Duration::from_millis(ANIMATION_DURATION_MS),
+        }
+    }
+
+    /// Calculate the eased progress value using ease-out cubic: t = 1 - (1-t)^3
+    fn ease_out_cubic(t: f32) -> f32 {
+        let t_inv = 1.0 - t;
+        1.0 - t_inv * t_inv * t_inv
+    }
+
+    /// Calculate raw linear progress (0.0 to 1.0)
+    pub fn progress(&self) -> f32 {
+        let elapsed = self.start_time.elapsed();
+        if elapsed >= self.duration {
+            1.0
+        } else {
+            elapsed.as_secs_f32() / self.duration.as_secs_f32()
+        }
+    }
+
+    /// Calculate eased progress value
+    pub fn eased_progress(&self) -> f32 {
+        Self::ease_out_cubic(self.progress())
+    }
+
+    /// Check if the animation is complete
+    pub fn is_complete(&self) -> bool {
+        self.start_time.elapsed() >= self.duration
+    }
+
+    /// Get the current interpolated position for a pane
+    pub fn current_position(&self, pane_id: PaneId) -> Option<AnimatedRect> {
+        let from = self.from_positions.get(&pane_id)?;
+        let to = self.to_positions.get(&pane_id)?;
+        let t = self.eased_progress();
+        Some(AnimatedRect::lerp(from, to, t))
+    }
+
+    /// Get remaining time until animation completes (for scheduling next frame)
+    pub fn remaining_duration(&self) -> Duration {
+        let elapsed = self.start_time.elapsed();
+        if elapsed >= self.duration {
+            Duration::ZERO
+        } else {
+            self.duration - elapsed
+        }
     }
 }
 
@@ -923,5 +1034,114 @@ mod tests {
         assert!(result.panes.is_empty());
         assert!(result.hidden.is_empty());
         assert_eq!(result.max_visible, 0);
+    }
+
+    // Tests for AnimatedRect
+    #[test]
+    fn test_animated_rect_new() {
+        let rect = AnimatedRect::new(10.0, 20.0, 100.0, 200.0);
+        assert_eq!(rect.x, 10.0);
+        assert_eq!(rect.y, 20.0);
+        assert_eq!(rect.width, 100.0);
+        assert_eq!(rect.height, 200.0);
+    }
+
+    #[test]
+    fn test_animated_rect_from_rect() {
+        let rect = Rect::new(10, 20, 100, 200);
+        let animated = AnimatedRect::from_rect(&rect);
+        assert_eq!(animated.x, 10.0);
+        assert_eq!(animated.y, 20.0);
+        assert_eq!(animated.width, 100.0);
+        assert_eq!(animated.height, 200.0);
+    }
+
+    #[test]
+    fn test_animated_rect_lerp_at_start() {
+        let from = AnimatedRect::new(0.0, 0.0, 100.0, 100.0);
+        let to = AnimatedRect::new(100.0, 100.0, 200.0, 200.0);
+        let result = AnimatedRect::lerp(&from, &to, 0.0);
+        assert_eq!(result.x, 0.0);
+        assert_eq!(result.y, 0.0);
+        assert_eq!(result.width, 100.0);
+        assert_eq!(result.height, 100.0);
+    }
+
+    #[test]
+    fn test_animated_rect_lerp_at_end() {
+        let from = AnimatedRect::new(0.0, 0.0, 100.0, 100.0);
+        let to = AnimatedRect::new(100.0, 100.0, 200.0, 200.0);
+        let result = AnimatedRect::lerp(&from, &to, 1.0);
+        assert_eq!(result.x, 100.0);
+        assert_eq!(result.y, 100.0);
+        assert_eq!(result.width, 200.0);
+        assert_eq!(result.height, 200.0);
+    }
+
+    #[test]
+    fn test_animated_rect_lerp_midpoint() {
+        let from = AnimatedRect::new(0.0, 0.0, 100.0, 100.0);
+        let to = AnimatedRect::new(100.0, 100.0, 200.0, 200.0);
+        let result = AnimatedRect::lerp(&from, &to, 0.5);
+        assert_eq!(result.x, 50.0);
+        assert_eq!(result.y, 50.0);
+        assert_eq!(result.width, 150.0);
+        assert_eq!(result.height, 150.0);
+    }
+
+    // Tests for LayoutAnimation
+    #[test]
+    fn test_layout_animation_ease_out_cubic() {
+        // t=0 should return 0
+        assert_eq!(LayoutAnimation::ease_out_cubic(0.0), 0.0);
+        // t=1 should return 1
+        assert_eq!(LayoutAnimation::ease_out_cubic(1.0), 1.0);
+        // t=0.5 should return more than 0.5 (ease-out accelerates at start)
+        let mid = LayoutAnimation::ease_out_cubic(0.5);
+        assert!(mid > 0.5, "ease_out_cubic(0.5) = {} should be > 0.5", mid);
+        // Formula: 1 - (1-0.5)^3 = 1 - 0.125 = 0.875
+        assert!((mid - 0.875).abs() < 0.001, "Expected 0.875, got {}", mid);
+    }
+
+    #[test]
+    fn test_layout_animation_new() {
+        let mut from = HashMap::new();
+        from.insert(1, AnimatedRect::new(0.0, 0.0, 100.0, 100.0));
+        let mut to = HashMap::new();
+        to.insert(1, AnimatedRect::new(100.0, 0.0, 200.0, 100.0));
+
+        let anim = LayoutAnimation::new(from.clone(), to.clone());
+        assert_eq!(anim.from_positions.len(), 1);
+        assert_eq!(anim.to_positions.len(), 1);
+        assert_eq!(anim.duration, Duration::from_millis(ANIMATION_DURATION_MS));
+    }
+
+    #[test]
+    fn test_layout_animation_current_position() {
+        let mut from = HashMap::new();
+        from.insert(1, AnimatedRect::new(0.0, 0.0, 400.0, 600.0));
+        let mut to = HashMap::new();
+        to.insert(1, AnimatedRect::new(0.0, 0.0, 200.0, 300.0));
+
+        let anim = LayoutAnimation::new(from, to);
+
+        // Should return Some for existing pane
+        assert!(anim.current_position(1).is_some());
+        // Should return None for non-existing pane
+        assert!(anim.current_position(999).is_none());
+    }
+
+    #[test]
+    fn test_layout_animation_is_complete() {
+        let from = HashMap::new();
+        let to = HashMap::new();
+        let mut anim = LayoutAnimation::new(from, to);
+
+        // Animation shouldn't be complete immediately
+        assert!(!anim.is_complete());
+
+        // Set start time to past to simulate completion
+        anim.start_time = Instant::now() - Duration::from_millis(ANIMATION_DURATION_MS + 10);
+        assert!(anim.is_complete());
     }
 }

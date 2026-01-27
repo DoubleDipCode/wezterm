@@ -141,6 +141,13 @@ impl crate::TermWindow {
                 }
             }
         }
+
+        // Clean up completed layout animation
+        if let Some(ref animation) = self.layout_animation {
+            if animation.is_complete() {
+                self.layout_animation = None;
+            }
+        }
     }
 
     pub fn paint_modal(&mut self) -> anyhow::Result<()> {
@@ -168,6 +175,16 @@ impl crate::TermWindow {
 
         // Clear out UI item positions; we'll rebuild these as we render
         self.ui_items.clear();
+
+        // Schedule next frame if layout animation is active
+        if let Some(ref animation) = self.layout_animation {
+            if !animation.is_complete() {
+                // Calculate when the next animation frame should be rendered
+                // Use ~60fps (16ms) for smooth animation
+                let next_frame = std::time::Instant::now() + std::time::Duration::from_millis(16);
+                self.update_next_frame_time(Some(next_frame));
+            }
+        }
 
         let panes = self.get_panes_to_render();
         let focused = self.focused.is_some();

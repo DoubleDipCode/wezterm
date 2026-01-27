@@ -143,12 +143,34 @@ impl super::TermWindow {
         }
     }
 
-    /// Schedule auto-tile layout recalculation
-    fn schedule_auto_tile_layout(&self) {
+    /// Schedule auto-tile layout recalculation with smooth animation
+    fn schedule_auto_tile_layout(&mut self) {
+        // Capture current pane positions before layout change
+        let from_positions = self.capture_pane_positions();
+
         // Layout will be recalculated on next frame through the existing
         // TabResized notification mechanism
         if let Some(window) = &self.window {
             window.invalidate();
+        }
+
+        // Schedule animation to start after a brief delay to allow mux to update
+        // We use a notification to trigger the animation start
+        self.schedule_layout_animation_start(from_positions);
+    }
+
+    /// Schedule the animation start after mux has updated pane positions
+    fn schedule_layout_animation_start(&mut self, from_positions: std::collections::HashMap<mux::pane::PaneId, mux::layout::AnimatedRect>) {
+        // Store the from_positions to use when animation starts
+        // We'll start the animation on the next frame when positions have updated
+        if let Some(window) = self.window.clone() {
+            let from_positions = from_positions.clone();
+            promise::spawn::spawn(async move {
+                // Wait a tiny bit for mux to update
+                smol::Timer::after(std::time::Duration::from_millis(10)).await;
+                window.notify(super::TermWindowNotif::LayoutAnimationStart(from_positions));
+            })
+            .detach();
         }
     }
 
