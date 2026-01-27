@@ -466,6 +466,40 @@ impl FileBrowserRenderer {
         true
     }
 
+    /// Enter the selected directory (l key)
+    ///
+    /// If the selected entry is a directory, changes the current directory
+    /// to that directory. If the selected entry is a file or no entry is
+    /// selected, this method does nothing. After navigating, the entry list
+    /// is reloaded and the selection is reset to index 0.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - If successfully entered the directory
+    /// * `false` - If selected entry is not a directory or no entry selected
+    pub fn enter_directory(&mut self) -> bool {
+        // Get the currently selected entry
+        let entry = match self.selected_entry() {
+            Some(e) => e,
+            None => return false,
+        };
+
+        // Only enter directories, not files
+        if !entry.is_dir {
+            return false;
+        }
+
+        // Get the path to enter
+        let new_dir = entry.path.clone();
+
+        // Update current directory
+        self.current_dir = Some(new_dir);
+        self.reload_entries();
+        self.selected_index = 0;
+
+        true
+    }
+
     /// Open the selected file in the user's editor (Enter key)
     ///
     /// If the selected entry is a file (not a directory), this method
@@ -1272,6 +1306,118 @@ mod tests {
         // Now should have subdir and parent_file.txt, not child_file.txt
         assert!(!renderer.entries().iter().any(|e| e.name == "child_file.txt"));
         assert!(renderer.entries().iter().any(|e| e.name == "parent_file.txt"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Enter directory tests (l key - US-041)
+
+    #[test]
+    fn test_enter_directory_returns_false_on_empty() {
+        let mut renderer = FileBrowserRenderer::new();
+        // No directory set, no entries
+        assert!(!renderer.enter_directory());
+    }
+
+    #[test]
+    fn test_enter_directory_returns_false_for_file() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_enter_file");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("file.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        // Selected entry is a file
+        assert!(!renderer.selected_entry().unwrap().is_dir);
+
+        // Should return false - can't enter a file
+        let result = renderer.enter_directory();
+        assert!(!result);
+
+        // Directory should not have changed
+        assert_eq!(renderer.current_dir(), Some(temp_dir.as_path()));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_enter_directory_navigates_to_directory() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_enter_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("child_file.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        // First entry should be the directory (directories come first)
+        assert!(renderer.selected_entry().unwrap().is_dir);
+        assert_eq!(renderer.selected_entry().unwrap().name, "subdir");
+
+        // Enter the directory
+        let result = renderer.enter_directory();
+        assert!(result);
+        assert_eq!(renderer.current_dir(), Some(subdir.as_path()));
+
+        // Entries should now be from subdir
+        assert!(renderer.entries().iter().any(|e| e.name == "child_file.txt"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_enter_directory_resets_selection_to_zero() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_enter_reset");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(temp_dir.join("a_file.txt"), "").unwrap();
+        std::fs::write(temp_dir.join("b_file.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        // Should have: subdir (dir), a_file.txt, b_file.txt
+        assert!(renderer.selected_entry().unwrap().is_dir);
+
+        // Enter the directory (this resets selection)
+        renderer.enter_directory();
+        assert_eq!(renderer.selected_index(), 0);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_enter_directory_reloads_entries() {
+        let mut renderer = FileBrowserRenderer::new();
+
+        let temp_dir = std::env::temp_dir().join("filebrowser_test_enter_reload");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let subdir = temp_dir.join("subdir");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(temp_dir.join("parent_file.txt"), "").unwrap();
+        std::fs::write(subdir.join("child_file.txt"), "").unwrap();
+
+        renderer.set_current_dir(temp_dir.clone());
+        // Should see parent_file.txt and subdir
+        assert!(renderer.entries().iter().any(|e| e.name == "parent_file.txt"));
+        assert!(!renderer.entries().iter().any(|e| e.name == "child_file.txt"));
+
+        // Enter subdir
+        renderer.enter_directory();
+        // Now should see child_file.txt, not parent_file.txt
+        assert!(!renderer.entries().iter().any(|e| e.name == "parent_file.txt"));
+        assert!(renderer.entries().iter().any(|e| e.name == "child_file.txt"));
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
