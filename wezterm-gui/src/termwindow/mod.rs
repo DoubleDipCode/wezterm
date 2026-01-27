@@ -3239,6 +3239,10 @@ impl TermWindow {
                 log::trace!("AutoTileReset");
                 self.auto_tile_reset();
             }
+            AutoTileClosePane { confirm } => {
+                log::trace!("AutoTileClosePane confirm={}", confirm);
+                self.auto_tile_close_pane(*confirm);
+            }
         };
         Ok(PerformAssignmentResult::Handled)
     }

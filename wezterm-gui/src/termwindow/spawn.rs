@@ -1,7 +1,9 @@
+use crate::overlay::{confirm_close_pane, start_overlay_pane};
 use crate::spawn::SpawnWhere;
 use config::keyassignment::{SpawnCommand, SpawnTabDomain};
 use config::TermConfig;
 use mux::layout::TilingLayout;
+use mux::pane::CloseReason;
 use mux::tab::{SplitDirection, SplitRequest, SplitSize as MuxSplitSize};
 use mux::Mux;
 use std::sync::Arc;
@@ -183,5 +185,57 @@ impl super::TermWindow {
             "auto_tile_reset: reset {} panes to equal layout",
             panes.len()
         );
+    }
+
+    /// Close the current pane and recalculate auto-tile layout for remaining panes.
+    /// This removes the pane from the tiling layout, closes it, and triggers
+    /// a layout recalculation so remaining panes fill the available space.
+    pub fn auto_tile_close_pane(&mut self, confirm: bool) {
+        let mux_window_id = self.mux_window_id;
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(mux_window_id) {
+            Some(tab) => tab,
+            None => {
+                log::error!("auto_tile_close_pane: no active tab");
+                return;
+            }
+        };
+        let pane = match tab.get_active_pane() {
+            Some(p) => p,
+            None => {
+                log::error!("auto_tile_close_pane: no active pane");
+                return;
+            }
+        };
+
+        let pane_id = pane.pane_id();
+
+        // Remove from tiling layout tracking
+        self.tiling_layout.panes.retain(|&id| id != pane_id);
+        self.tiling_layout.locked.remove(&pane_id);
+
+        log::trace!(
+            "auto_tile_close_pane: closing pane {} (confirm={}), {} panes remaining",
+            pane_id,
+            confirm,
+            self.tiling_layout.panes.len()
+        );
+
+        if confirm && !pane.can_close_without_prompting(CloseReason::Pane) {
+            // Show confirmation dialog
+            let window = self.window.clone().unwrap();
+            let (overlay, future) = start_overlay_pane(self, &pane, move |pane_id, term| {
+                confirm_close_pane(pane_id, term, mux_window_id, window)
+            });
+            self.assign_overlay_for_pane(pane_id, overlay);
+            promise::spawn::spawn(future).detach();
+        } else {
+            // Close pane directly
+            mux.remove_pane(pane_id);
+        }
+
+        // Schedule layout recalculation after pane is removed
+        // The layout will be recalculated on next frame
+        self.schedule_auto_tile_layout();
     }
 }

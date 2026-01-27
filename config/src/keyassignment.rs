@@ -650,6 +650,10 @@ pub enum KeyAssignment {
     AutoTileNewPane(SpawnCommand),
     /// Auto-tiling: reset all pane layouts to equal size
     AutoTileReset,
+    /// Auto-tiling: close pane and recalculate layout for remaining panes
+    AutoTileClosePane {
+        confirm: bool,
+    },
 }
 impl_lua_conversion_dynamic!(KeyAssignment);
 

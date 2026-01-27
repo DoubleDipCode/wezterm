@@ -2027,6 +2027,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Shell"],
             icon: Some("md_view_grid"),
         },
+        AutoTileClosePane { .. } => CommandDef {
+            brief: "Auto-Tile Close Pane".into(),
+            doc: "Close the current pane and recalculate auto-tile layout".into(),
+            keys: vec![(Modifiers::SUPER, "w".into())],
+            args: &[ArgType::ActivePane],
+            menubar: &["Shell"],
+            icon: Some("md_close"),
+        },
     })
 }
 
@@ -2057,6 +2065,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
             ..Default::default()
         }),
         AutoTileReset,
+        AutoTileClosePane { confirm: true },
         CloseCurrentTab { confirm: true },
         CloseCurrentPane { confirm: true },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain),
