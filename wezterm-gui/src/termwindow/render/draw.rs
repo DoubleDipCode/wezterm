@@ -196,9 +196,16 @@ impl crate::TermWindow {
         )
         .to_arrays_transposed();
 
+        // Calculate animation time in seconds for border animations
+        let animation_time = self.created.elapsed().as_secs_f32();
+
         let border_uniform_bind_group = webgpu.border_pipeline.create_uniform_bind_group(
             &webgpu.device,
-            BorderUniform { projection },
+            BorderUniform {
+                projection,
+                animation_time,
+                _padding: [0.0, 0.0, 0.0],
+            },
         );
 
         // Pass 1: Render borders to border_texture

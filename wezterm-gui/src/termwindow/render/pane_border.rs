@@ -293,15 +293,27 @@ impl BlurPipeline {
 }
 
 /// Uniform data passed to the border shader.
-/// Contains the projection matrix for transforming vertices to clip space.
+/// Contains the projection matrix for transforming vertices to clip space,
+/// plus animation time for status-based animations (pulse, blink).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BorderUniform {
     pub projection: [[f32; 4]; 4],
+    /// Animation time in seconds (from window creation)
+    pub animation_time: f32,
+    /// Padding for 16-byte alignment
+    pub _padding: [f32; 3],
 }
 
+/// Status codes for shader-side animation selection.
+/// Matches the ClaudeStatus enum order.
+pub const STATUS_IDLE: f32 = 0.0;
+pub const STATUS_RUNNING: f32 = 1.0;
+pub const STATUS_AWAITING_PERMISSION: f32 = 2.0;
+pub const STATUS_ERROR: f32 = 3.0;
+
 /// Vertex format for border rendering.
-/// Each vertex has a 2D position and RGBA color.
+/// Each vertex has a 2D position, RGBA color, and status code for animations.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BorderVertex {
@@ -309,13 +321,18 @@ pub struct BorderVertex {
     pub position: [f32; 2],
     /// RGBA color (normalized 0.0-1.0)
     pub color: [f32; 4],
+    /// Status code for animation selection (0=Idle, 1=Running, 2=Permission, 3=Error)
+    pub status: f32,
+    /// Padding for alignment
+    pub _padding: f32,
 }
 
 impl BorderVertex {
     /// Vertex attribute layout for wgpu
-    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+    const ATTRIBS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
         0 => Float32x2,  // position
         1 => Float32x4,  // color
+        2 => Float32,    // status
     ];
 
     /// Returns the vertex buffer layout descriptor for this vertex type.
@@ -555,9 +572,9 @@ pub fn calculate_border_quads(
 /// Border width in pixels for Claude Code status borders.
 const BORDER_WIDTH_PX: f32 = 4.0;
 
-/// Generates border vertices for a quad with the given color.
+/// Generates border vertices for a quad with the given color and status.
 /// Returns 6 vertices (2 triangles) for the quad.
-fn quad_to_vertices(quad: &BorderQuad, color: [f32; 4]) -> [BorderVertex; 6] {
+fn quad_to_vertices(quad: &BorderQuad, color: [f32; 4], status: f32) -> [BorderVertex; 6] {
     let x0 = quad.x;
     let y0 = quad.y;
     let x1 = quad.x + quad.width;
@@ -565,13 +582,13 @@ fn quad_to_vertices(quad: &BorderQuad, color: [f32; 4]) -> [BorderVertex; 6] {
 
     [
         // Triangle 1
-        BorderVertex { position: [x0, y0], color },
-        BorderVertex { position: [x1, y0], color },
-        BorderVertex { position: [x1, y1], color },
+        BorderVertex { position: [x0, y0], color, status, _padding: 0.0 },
+        BorderVertex { position: [x1, y0], color, status, _padding: 0.0 },
+        BorderVertex { position: [x1, y1], color, status, _padding: 0.0 },
         // Triangle 2
-        BorderVertex { position: [x0, y0], color },
-        BorderVertex { position: [x1, y1], color },
-        BorderVertex { position: [x0, y1], color },
+        BorderVertex { position: [x0, y0], color, status, _padding: 0.0 },
+        BorderVertex { position: [x1, y1], color, status, _padding: 0.0 },
+        BorderVertex { position: [x0, y1], color, status, _padding: 0.0 },
     ]
 }
 
@@ -579,6 +596,18 @@ fn quad_to_vertices(quad: &BorderQuad, color: [f32; 4]) -> [BorderVertex; 6] {
 pub struct PaneBorderData {
     pub quads: Vec<BorderQuad>,
     pub color: [f32; 4],
+    /// Status code for animation selection (0=Idle, 1=Running, 2=Permission, 3=Error)
+    pub status: f32,
+}
+
+/// Converts ClaudeStatus to the shader status code.
+fn status_to_code(status: mux::pane::ClaudeStatus) -> f32 {
+    match status {
+        mux::pane::ClaudeStatus::Idle => STATUS_IDLE,
+        mux::pane::ClaudeStatus::Running => STATUS_RUNNING,
+        mux::pane::ClaudeStatus::AwaitingPermission => STATUS_AWAITING_PERMISSION,
+        mux::pane::ClaudeStatus::Error => STATUS_ERROR,
+    }
 }
 
 impl crate::TermWindow {
@@ -606,8 +635,9 @@ impl crate::TermWindow {
         let top_pixel_y = top_bar_height + padding_top + border.top.get() as f32;
 
         for pos in panes {
-            let status = pos.pane.get_claude_status();
-            let color = StatusColor::from_status(status.into());
+            let claude_status = pos.pane.get_claude_status();
+            let color = StatusColor::from_status(claude_status.into());
+            let status_code = status_to_code(claude_status);
 
             let pane_x = padding_left + border.left.get() as f32 + (pos.left as f32 * cell_width);
             let pane_y = top_pixel_y + (pos.top as f32 * cell_height);
@@ -619,6 +649,7 @@ impl crate::TermWindow {
             result.push(PaneBorderData {
                 quads,
                 color: [color.r, color.g, color.b, color.a],
+                status: status_code,
             });
         }
 
@@ -632,7 +663,7 @@ impl crate::TermWindow {
 
         for data in border_data {
             for quad in &data.quads {
-                vertices.extend_from_slice(&quad_to_vertices(quad, data.color));
+                vertices.extend_from_slice(&quad_to_vertices(quad, data.color, data.status));
             }
         }
 
