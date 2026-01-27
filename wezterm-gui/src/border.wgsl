@@ -4,7 +4,7 @@
 // Status codes:
 // 0 = Idle (pulse animation: sin(time * 2π) with 2 second period)
 // 1 = Running (solid color)
-// 2 = AwaitingPermission (blink animation - implemented in US-021)
+// 2 = AwaitingPermission (blink animation: 1Hz toggle between 1.0 and 0.3 opacity)
 // 3 = Error (solid color)
 
 // Mathematical constants
@@ -21,6 +21,11 @@ const STATUS_ERROR: f32 = 3.0;
 const PULSE_PERIOD: f32 = 2.0;  // 2 seconds for full pulse cycle
 const PULSE_MIN_OPACITY: f32 = 0.4;  // Minimum opacity during pulse
 const PULSE_MAX_OPACITY: f32 = 1.0;  // Maximum opacity during pulse
+
+// Blink animation parameters (for AwaitingPermission status)
+const BLINK_PERIOD: f32 = 1.0;  // 1 second for full blink cycle (1Hz)
+const BLINK_ON_OPACITY: f32 = 1.0;  // Full brightness during "on" phase
+const BLINK_DIM_OPACITY: f32 = 0.3;  // Dim during "off" phase
 
 // Vertex input with status for animation selection
 struct VertexInput {
@@ -67,9 +72,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let pulse_factor = (pulse_phase + 1.0) * 0.5;  // Map -1..1 to 0..1
         let opacity = PULSE_MIN_OPACITY + pulse_factor * (PULSE_MAX_OPACITY - PULSE_MIN_OPACITY);
         final_color.a = final_color.a * opacity;
+    } else if (in.status == STATUS_AWAITING_PERMISSION) {
+        // Blink animation for AwaitingPermission status
+        // Toggle between full and dim opacity at 1Hz (on for 0.5s, dim for 0.5s)
+        // Use step function: if (time % 1.0) < 0.5 then full brightness, else dim
+        let blink_phase = uniforms.animation_time % BLINK_PERIOD;
+        let opacity = select(BLINK_DIM_OPACITY, BLINK_ON_OPACITY, blink_phase < 0.5);
+        final_color.a = final_color.a * opacity;
     }
     // STATUS_RUNNING and STATUS_ERROR: solid color (no animation)
-    // STATUS_AWAITING_PERMISSION: will be implemented in US-021
 
     return final_color;
 }
