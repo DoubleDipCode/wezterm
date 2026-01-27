@@ -78,6 +78,83 @@ pub enum ClaudeStatus {
     Error,
 }
 
+/// RGBA color for status visualization.
+///
+/// Color values are normalized floats in range [0.0, 1.0].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StatusColor {
+    /// Red component (0.0 - 1.0)
+    pub r: f32,
+    /// Green component (0.0 - 1.0)
+    pub g: f32,
+    /// Blue component (0.0 - 1.0)
+    pub b: f32,
+    /// Alpha component (0.0 - 1.0)
+    pub a: f32,
+}
+
+impl StatusColor {
+    /// Create a new StatusColor from RGBA components.
+    pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self { r, g, b, a }
+    }
+
+    /// Create a StatusColor from a hex color string (e.g., "#ff5555").
+    ///
+    /// Returns None if the string is not a valid hex color.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(Self {
+            r: r as f32 / 255.0,
+            g: g as f32 / 255.0,
+            b: b as f32 / 255.0,
+            a: 1.0,
+        })
+    }
+
+    /// Get the StatusColor for a given ClaudeStatus.
+    ///
+    /// Color mapping:
+    /// - Idle: #ff5555 (red)
+    /// - Running: #50fa7b (green)
+    /// - AwaitingPermission: #f1fa8c (yellow)
+    /// - Error: #ffb86c (orange)
+    pub fn from_status(status: ClaudeStatus) -> Self {
+        match status {
+            ClaudeStatus::Idle => Self {
+                r: 1.0,           // 0xff = 255
+                g: 85.0 / 255.0,  // 0x55 = 85
+                b: 85.0 / 255.0,  // 0x55 = 85
+                a: 1.0,
+            },
+            ClaudeStatus::Running => Self {
+                r: 80.0 / 255.0,  // 0x50 = 80
+                g: 250.0 / 255.0, // 0xfa = 250
+                b: 123.0 / 255.0, // 0x7b = 123
+                a: 1.0,
+            },
+            ClaudeStatus::AwaitingPermission => Self {
+                r: 241.0 / 255.0, // 0xf1 = 241
+                g: 250.0 / 255.0, // 0xfa = 250
+                b: 140.0 / 255.0, // 0x8c = 140
+                a: 1.0,
+            },
+            ClaudeStatus::Error => Self {
+                r: 1.0,           // 0xff = 255
+                g: 184.0 / 255.0, // 0xb8 = 184
+                b: 108.0 / 255.0, // 0x6c = 108
+                a: 1.0,
+            },
+        }
+    }
+}
+
 impl Default for ClaudeStatus {
     fn default() -> Self {
         ClaudeStatus::Idle
@@ -240,5 +317,82 @@ mod tests {
         // Error should take priority over running
         let output = "Thinking...\nError: failed to compile";
         assert_eq!(ClaudeStatus::detect(output, "claude"), ClaudeStatus::Error);
+    }
+
+    // StatusColor tests
+
+    #[test]
+    fn test_status_color_from_status_idle() {
+        // Idle = #ff5555
+        let color = StatusColor::from_status(ClaudeStatus::Idle);
+        assert_eq!(color.r, 1.0);
+        assert!((color.g - 85.0 / 255.0).abs() < 0.001);
+        assert!((color.b - 85.0 / 255.0).abs() < 0.001);
+        assert_eq!(color.a, 1.0);
+    }
+
+    #[test]
+    fn test_status_color_from_status_running() {
+        // Running = #50fa7b
+        let color = StatusColor::from_status(ClaudeStatus::Running);
+        assert!((color.r - 80.0 / 255.0).abs() < 0.001);
+        assert!((color.g - 250.0 / 255.0).abs() < 0.001);
+        assert!((color.b - 123.0 / 255.0).abs() < 0.001);
+        assert_eq!(color.a, 1.0);
+    }
+
+    #[test]
+    fn test_status_color_from_status_permission() {
+        // Permission = #f1fa8c
+        let color = StatusColor::from_status(ClaudeStatus::AwaitingPermission);
+        assert!((color.r - 241.0 / 255.0).abs() < 0.001);
+        assert!((color.g - 250.0 / 255.0).abs() < 0.001);
+        assert!((color.b - 140.0 / 255.0).abs() < 0.001);
+        assert_eq!(color.a, 1.0);
+    }
+
+    #[test]
+    fn test_status_color_from_status_error() {
+        // Error = #ffb86c
+        let color = StatusColor::from_status(ClaudeStatus::Error);
+        assert_eq!(color.r, 1.0);
+        assert!((color.g - 184.0 / 255.0).abs() < 0.001);
+        assert!((color.b - 108.0 / 255.0).abs() < 0.001);
+        assert_eq!(color.a, 1.0);
+    }
+
+    #[test]
+    fn test_status_color_from_hex_valid() {
+        // Test with #ff5555
+        let color = StatusColor::from_hex("#ff5555").unwrap();
+        assert_eq!(color.r, 1.0);
+        assert!((color.g - 85.0 / 255.0).abs() < 0.001);
+        assert!((color.b - 85.0 / 255.0).abs() < 0.001);
+        assert_eq!(color.a, 1.0);
+
+        // Test without # prefix
+        let color = StatusColor::from_hex("50fa7b").unwrap();
+        assert!((color.r - 80.0 / 255.0).abs() < 0.001);
+        assert!((color.g - 250.0 / 255.0).abs() < 0.001);
+        assert!((color.b - 123.0 / 255.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_status_color_from_hex_invalid() {
+        // Too short
+        assert!(StatusColor::from_hex("#fff").is_none());
+        // Too long
+        assert!(StatusColor::from_hex("#ff5555ff").is_none());
+        // Invalid hex
+        assert!(StatusColor::from_hex("#gggggg").is_none());
+    }
+
+    #[test]
+    fn test_status_color_new() {
+        let color = StatusColor::new(0.5, 0.6, 0.7, 0.8);
+        assert_eq!(color.r, 0.5);
+        assert_eq!(color.g, 0.6);
+        assert_eq!(color.b, 0.7);
+        assert_eq!(color.a, 0.8);
     }
 }
