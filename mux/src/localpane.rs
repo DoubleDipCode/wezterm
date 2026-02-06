@@ -196,6 +196,8 @@ pub struct LocalPane {
     pty_output_buffer: Arc<Mutex<PtyOutputBuffer>>,
     /// Current Claude Code status for this pane (used for visual indicators)
     claude_status: Mutex<ClaudeStatus>,
+    /// Timestamp when a non-Idle status was last detected (for timeout reset)
+    claude_status_last_activity: Mutex<Option<std::time::Instant>>,
     /// Current working directory for this pane, updated via OSC 7 escape sequences.
     /// Used by the file browser to show the directory contents.
     /// Defaults to the user's home directory on pane creation.
@@ -905,6 +907,18 @@ impl Pane for LocalPane {
 
     fn set_claude_status(&self, status: ClaudeStatus) {
         *self.claude_status.lock() = status;
+        // Track when we last saw activity (non-Idle status)
+        if status != ClaudeStatus::Idle {
+            *self.claude_status_last_activity.lock() = Some(std::time::Instant::now());
+        }
+    }
+
+    fn get_claude_status_last_activity(&self) -> Option<std::time::Instant> {
+        *self.claude_status_last_activity.lock()
+    }
+
+    fn clear_claude_status_activity(&self) {
+        *self.claude_status_last_activity.lock() = None;
     }
 
     fn get_current_dir(&self) -> PathBuf {
@@ -1129,6 +1143,7 @@ impl LocalPane {
             command_description,
             pty_output_buffer: Arc::new(Mutex::new(PtyOutputBuffer::new(PTY_OUTPUT_BUFFER_CAPACITY))),
             claude_status: Mutex::new(ClaudeStatus::Idle),
+            claude_status_last_activity: Mutex::new(None),
             current_dir: Mutex::new(dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"))),
         }
     }

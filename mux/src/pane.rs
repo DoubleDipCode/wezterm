@@ -396,6 +396,15 @@ pub trait Pane: Downcast + Send + Sync {
     /// Default implementation does nothing.
     fn set_claude_status(&self, _status: ClaudeStatus) {}
 
+    /// Get the timestamp of when the Claude status was last set to a non-Idle value.
+    /// Used for timeout-based reset to Idle after inactivity.
+    fn get_claude_status_last_activity(&self) -> Option<std::time::Instant> {
+        None
+    }
+
+    /// Clear the Claude status activity timestamp, indicating the status has been reset.
+    fn clear_claude_status_activity(&self) {}
+
     /// Get the type of this pane (Terminal or FileBrowser).
     /// Returns `PaneType::Terminal` by default.
     fn get_pane_type(&self) -> PaneType {

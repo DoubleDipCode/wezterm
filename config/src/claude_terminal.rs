@@ -237,6 +237,12 @@ pub struct ClaudeDetectionConfig {
     /// Status detection polling interval in milliseconds (default: 100)
     #[dynamic(default = "default_detection_interval")]
     pub polling_interval_ms: u32,
+
+    /// Time in milliseconds after which a non-Idle status resets to Idle
+    /// if no new activity patterns are detected (default: 3000 = 3 seconds).
+    /// Set to 0 to disable timeout.
+    #[dynamic(default = "default_idle_timeout")]
+    pub idle_timeout_ms: u32,
 }
 
 impl Default for ClaudeDetectionConfig {
@@ -246,6 +252,7 @@ impl Default for ClaudeDetectionConfig {
             running_patterns: Vec::new(),
             error_patterns: Vec::new(),
             polling_interval_ms: default_detection_interval(),
+            idle_timeout_ms: default_idle_timeout(),
         }
     }
 }
@@ -254,6 +261,10 @@ impl_lua_conversion_dynamic!(ClaudeDetectionConfig);
 
 fn default_detection_interval() -> u32 {
     100
+}
+
+fn default_idle_timeout() -> u32 {
+    3000 // 3 seconds
 }
 
 /// Main Claude Terminal configuration.
