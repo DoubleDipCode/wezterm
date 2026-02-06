@@ -148,7 +148,8 @@ config.claude_terminal = {
     error_patterns = {
       "Custom error message",
     },
-    polling_interval_ms = 100, -- Status check interval
+    polling_interval_ms = 100, -- Status check interval in ms
+    idle_timeout_ms = 3000,    -- Reset to Idle after 3s of no activity (0 = disabled)
   },
 }
 
