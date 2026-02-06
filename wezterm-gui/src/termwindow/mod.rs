@@ -2142,13 +2142,17 @@ impl TermWindow {
     }
 
     /// Schedule the next Claude Code status detection poll.
-    /// Fires every 100ms to check PTY output for status patterns.
+    /// Fires at the configured interval (default 100ms) to check PTY output for status patterns.
     fn schedule_next_claude_status_update(&mut self) {
         if let Some(window) = self.window.as_ref() {
             let now = Instant::now();
             if self.last_claude_status_call <= now {
-                // Claude status detection runs every 100ms
-                let interval = Duration::from_millis(100);
+                // Use configured polling interval (default 100ms)
+                let interval_ms = config::configuration()
+                    .claude_terminal
+                    .detection
+                    .polling_interval_ms;
+                let interval = Duration::from_millis(interval_ms as u64);
                 let target = now + interval;
                 self.last_claude_status_call = target;
 
@@ -2188,13 +2192,19 @@ impl TermWindow {
                 }
             }
 
+            // Get idle timeout from config (0 = disabled)
+            let idle_timeout_ms = config::configuration()
+                .claude_terminal
+                .detection
+                .idle_timeout_ms;
+
             for pos in tab.iter_panes() {
                 // Get PTY output from ring buffer
                 if let Some(pty_output) = pos.pane.get_pty_output_for_status_detection() {
                     // Detect status using pattern matching
                     let gui_status = GuiClaudeStatus::detect(&pty_output, "claude");
 
-                    // Convert GUI status to mux status and update pane
+                    // Convert GUI status to mux status
                     let mux_status = match gui_status {
                         GuiClaudeStatus::Idle => mux::pane::ClaudeStatus::Idle,
                         GuiClaudeStatus::Running => mux::pane::ClaudeStatus::Running,
@@ -2204,7 +2214,35 @@ impl TermWindow {
                         GuiClaudeStatus::Error => mux::pane::ClaudeStatus::Error,
                     };
 
-                    pos.pane.set_claude_status(mux_status);
+                    // Check if we should reset to Idle due to timeout
+                    let final_status = if mux_status == mux::pane::ClaudeStatus::Idle {
+                        // Pattern detection says Idle - check if we should timeout
+                        if idle_timeout_ms > 0 {
+                            if let Some(last_activity) = pos.pane.get_claude_status_last_activity()
+                            {
+                                let elapsed = last_activity.elapsed();
+                                if elapsed >= Duration::from_millis(idle_timeout_ms as u64) {
+                                    // Timeout reached, clear activity and set to Idle
+                                    pos.pane.clear_claude_status_activity();
+                                    mux::pane::ClaudeStatus::Idle
+                                } else {
+                                    // Still within timeout, keep current status
+                                    pos.pane.get_claude_status()
+                                }
+                            } else {
+                                // No activity timestamp, already Idle
+                                mux::pane::ClaudeStatus::Idle
+                            }
+                        } else {
+                            // Timeout disabled, use detected status
+                            mux_status
+                        }
+                    } else {
+                        // Non-Idle status detected, use it
+                        mux_status
+                    };
+
+                    pos.pane.set_claude_status(final_status);
                 }
 
                 // Sync current directory from OSC 7 escape sequence
