@@ -6,6 +6,7 @@
 /// Patterns that indicate Claude Code is waiting for user permission.
 /// These are checked with highest priority.
 pub const PERMISSION_PATTERNS: &[&str] = &[
+    // Claude Code tool permission prompts
     "Allow this action?",
     "Allow once",
     "Allow always",
@@ -18,10 +19,26 @@ pub const PERMISSION_PATTERNS: &[&str] = &[
     "Allow?",
     "Permission required",
     "Waiting for approval",
+    // Claude Code specific permission prompts
+    "Allow Read",
+    "Allow Write",
+    "Allow Edit",
+    "Allow Bash",
+    "Allow Task",
+    "Allow Glob",
+    "Allow Grep",
+    "Allow WebFetch",
+    "Allow WebSearch",
+    "Allow NotebookEdit",
+    // Question prompts from AskUserQuestion tool
+    "Select an option",
+    "Choose one",
+    "Please select",
 ];
 
 /// Patterns that indicate Claude Code is actively running/processing.
 pub const RUNNING_PATTERNS: &[&str] = &[
+    // Generic activity patterns
     "Thinking...",
     "Working...",
     "Processing...",
@@ -33,6 +50,7 @@ pub const RUNNING_PATTERNS: &[&str] = &[
     "Writing...",
     "Reading...",
     "Searching...",
+    // Braille spinner characters (Claude Code uses these)
     "⠋",
     "⠙",
     "⠹",
@@ -43,10 +61,31 @@ pub const RUNNING_PATTERNS: &[&str] = &[
     "⠧",
     "⠇",
     "⠏",
+    // Claude Code task indicators
+    "Fetching",
+    "Compiling",
+    "Building",
+    "Installing",
+    "Updating",
+    "Cloning",
+    "Downloading",
+    // Tool activity indicators
+    "Reading file",
+    "Writing file",
+    "Editing file",
+    "Running command",
+    "Searching for",
+    "Exploring",
+    "Researching",
+    // Agent activity
+    "Agent:",
+    "Spawning agent",
+    "Task agent",
 ];
 
 /// Patterns that indicate Claude Code has encountered an error.
 pub const ERROR_PATTERNS: &[&str] = &[
+    // Generic error patterns
     "Error:",
     "ERROR:",
     "error:",
@@ -60,9 +99,28 @@ pub const ERROR_PATTERNS: &[&str] = &[
     "fatal:",
     "Fatal:",
     "FATAL:",
+    // Unicode error symbols
     "✗",
     "✘",
     "❌",
+    // Claude Code specific errors
+    "Tool error",
+    "Permission denied",
+    "Command failed",
+    "Build failed",
+    "Test failed",
+    "Compilation error",
+    "Syntax error",
+    "TypeError",
+    "SyntaxError",
+    "ReferenceError",
+    // Git errors
+    "merge conflict",
+    "CONFLICT",
+    // Network errors
+    "Connection refused",
+    "Network error",
+    "Timeout",
 ];
 
 /// Represents the current status of a Claude Code session.
@@ -417,7 +475,7 @@ mod tests {
         let mut detection_config = config::claude_terminal::ClaudeDetectionConfig::default();
         detection_config
             .running_patterns
-            .push("Compiling...".to_string());
+            .push("CustomRunningState...".to_string());
 
         // Built-in patterns still work
         let output1 = "Thinking...";
@@ -427,7 +485,7 @@ mod tests {
         );
 
         // Custom pattern also works
-        let output2 = "Compiling... please wait";
+        let output2 = "CustomRunningState... please wait";
         assert_eq!(
             ClaudeStatus::detect_with_config(output2, "claude", &detection_config),
             ClaudeStatus::Running
